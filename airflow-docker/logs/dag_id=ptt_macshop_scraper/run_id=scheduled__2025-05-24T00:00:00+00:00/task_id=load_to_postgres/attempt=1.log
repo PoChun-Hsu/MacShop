@@ -1,0 +1,149 @@
+[2025-05-25T16:57:34.004+0000] {taskinstance.py:1957} INFO - Dependencies all met for dep_context=non-requeueable deps ti=<TaskInstance: ptt_macshop_scraper.load_to_postgres scheduled__2025-05-24T00:00:00+00:00 [queued]>
+[2025-05-25T16:57:34.007+0000] {taskinstance.py:1957} INFO - Dependencies all met for dep_context=requeueable deps ti=<TaskInstance: ptt_macshop_scraper.load_to_postgres scheduled__2025-05-24T00:00:00+00:00 [queued]>
+[2025-05-25T16:57:34.007+0000] {taskinstance.py:2171} INFO - Starting attempt 1 of 1
+[2025-05-25T16:57:34.013+0000] {taskinstance.py:2192} INFO - Executing <Task(PythonOperator): load_to_postgres> on 2025-05-24 00:00:00+00:00
+[2025-05-25T16:57:34.016+0000] {standard_task_runner.py:60} INFO - Started process 72 to run task
+[2025-05-25T16:57:34.018+0000] {standard_task_runner.py:87} INFO - Running: ['***', 'tasks', 'run', 'ptt_macshop_scraper', 'load_to_postgres', 'scheduled__2025-05-24T00:00:00+00:00', '--job-id', '9', '--raw', '--subdir', 'DAGS_FOLDER/ptt_macshop_dag.py', '--cfg-path', '/tmp/tmpgwu3mxkt']
+[2025-05-25T16:57:34.020+0000] {standard_task_runner.py:88} INFO - Job 9: Subtask load_to_postgres
+[2025-05-25T16:57:34.081+0000] {task_command.py:423} INFO - Running <TaskInstance: ptt_macshop_scraper.load_to_postgres scheduled__2025-05-24T00:00:00+00:00 [running]> on host 471bda57ed4c
+[2025-05-25T16:57:34.124+0000] {taskinstance.py:2481} INFO - Exporting env vars: AIRFLOW_CTX_DAG_OWNER='***' AIRFLOW_CTX_DAG_ID='ptt_macshop_scraper' AIRFLOW_CTX_TASK_ID='load_to_postgres' AIRFLOW_CTX_EXECUTION_DATE='2025-05-24T00:00:00+00:00' AIRFLOW_CTX_TRY_NUMBER='1' AIRFLOW_CTX_DAG_RUN_ID='scheduled__2025-05-24T00:00:00+00:00'
+[2025-05-25T16:57:34.136+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.139+0000] {sql.py:432} INFO - Running statement: 
+        CREATE TABLE IF NOT EXISTS ptt_macshop_articles (
+            id SERIAL PRIMARY KEY,
+            title TEXT,
+            author TEXT,
+            date TEXT,
+            link TEXT UNIQUE
+        );
+        , parameters: None
+[2025-05-25T16:57:34.157+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.161+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 台北iPhone 16 Pro 256G 沙漠色', 'songla000', '5/25', 'https://www.ptt.cc/bbs/MacShop/M.1748178292.A.47A.html')
+[2025-05-25T16:57:34.161+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.167+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.170+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[徵求] 全國 Lightning或TypeC轉SD讀卡器', 'taichunghm', '5/25', 'https://www.ptt.cc/bbs/MacShop/M.1748180213.A.AA9.html')
+[2025-05-25T16:57:34.170+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.175+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.177+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 台南 iPhone 12 Pro 256G 金色', 'wqqwqq8913', '5/25', 'https://www.ptt.cc/bbs/MacShop/M.1748182181.A.988.html')
+[2025-05-25T16:57:34.178+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.182+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.184+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 台南iPhone 16 Pro 256G 沙漠色', 'chenbananakk', '5/25', 'https://www.ptt.cc/bbs/MacShop/M.1748182562.A.664.html')
+[2025-05-25T16:57:34.185+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.189+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.191+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 新竹 iphone 16e 128G 黑色', 'dora0955', '5/25', 'https://www.ptt.cc/bbs/MacShop/M.1748184521.A.ADC.html')
+[2025-05-25T16:57:34.192+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.196+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.198+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 新北Iphone 16 Pro Max黑/IPAD Pro 11 M4', 'pchome14g', '5/25', 'https://www.ptt.cc/bbs/MacShop/M.1748185857.A.CC3.html')
+[2025-05-25T16:57:34.199+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.203+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.206+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 雙北 iPhone XS Max / 11 / 11 Pro', 'dan21309dan', '5/25', 'https://www.ptt.cc/bbs/MacShop/M.1748187290.A.F29.html')
+[2025-05-25T16:57:34.207+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.213+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.216+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售]全國 Apple Watch SE 40mm 太空灰', 'timliu0811', '5/25', 'https://www.ptt.cc/bbs/MacShop/M.1748187883.A.D11.html')
+[2025-05-25T16:57:34.217+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.221+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.224+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 雙北 iPhone 12 / 13 Pro / 14 Pro', 'David1115', '5/25', 'https://www.ptt.cc/bbs/MacShop/M.1748188776.A.F16.html')
+[2025-05-25T16:57:34.225+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.229+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.232+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 新北 iphone 16 pro max', 'miya000', '5/26', 'https://www.ptt.cc/bbs/MacShop/M.1748189227.A.95E.html')
+[2025-05-25T16:57:34.232+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.237+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.239+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[徵求] 基隆 APPLE TV 4K 二代', 'black1x2y3z', '5/26', 'https://www.ptt.cc/bbs/MacShop/M.1748189549.A.AB1.html')
+[2025-05-25T16:57:34.240+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.244+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.246+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 台北全新iPhone 16 Plus白色128G送玻璃貼', 'boy999961', '5/26', 'https://www.ptt.cc/bbs/MacShop/M.1748189702.A.48E.html')
+[2025-05-25T16:57:34.247+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.251+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.255+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[販售] 台北 iPhone 16 Pro Max 512G 原鈦', 'gary827', '5/26', 'https://www.ptt.cc/bbs/MacShop/M.1748190837.A.314.html')
+[2025-05-25T16:57:34.256+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.262+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.273+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[徵求] 雙北 iPhone 16e 256g', 'jim881115', '5/26', 'https://www.ptt.cc/bbs/MacShop/M.1748191316.A.88C.html')
+[2025-05-25T16:57:34.277+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.290+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.301+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[公告] 板規 20250408版本', 'atimis', '6/22', 'https://www.ptt.cc/bbs/MacShop/M.1624342794.A.EED.html')
+[2025-05-25T16:57:34.302+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.310+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.314+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[公告] 再次重申，需要付訂金的請三思(魯道夫)', 'atimis', '9/23', 'https://www.ptt.cc/bbs/MacShop/M.1695435917.A.9A9.html')
+[2025-05-25T16:57:34.315+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.322+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.328+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[公告] 新增版規 低買高賣部份', 'atimis', '7/04', 'https://www.ptt.cc/bbs/MacShop/M.1720087902.A.504.html')
+[2025-05-25T16:57:34.329+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.336+0000] {base.py:83} INFO - Using connection ID 'postgres_default' for task execution.
+[2025-05-25T16:57:34.339+0000] {sql.py:432} INFO - Running statement: 
+            INSERT INTO ptt_macshop_articles (title, author, date, link)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (link) DO NOTHING;
+            , parameters: ('[公告] 新增板規 禁止販售 未經NCC認證商品 水貨', 'atimis', '12/09', 'https://www.ptt.cc/bbs/MacShop/M.1733711837.A.929.html')
+[2025-05-25T16:57:34.340+0000] {sql.py:441} INFO - Rows affected: 1
+[2025-05-25T16:57:34.341+0000] {python.py:201} INFO - Done. Returned value was: None
+[2025-05-25T16:57:34.348+0000] {taskinstance.py:1138} INFO - Marking task as SUCCESS. dag_id=ptt_macshop_scraper, task_id=load_to_postgres, execution_date=20250524T000000, start_date=20250525T165734, end_date=20250525T165734
+[2025-05-25T16:57:34.365+0000] {local_task_job_runner.py:234} INFO - Task exited with return code 0
+[2025-05-25T16:57:34.378+0000] {taskinstance.py:3281} INFO - 0 downstream tasks scheduled from follow-on schedule check

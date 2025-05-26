@@ -1,0 +1,13 @@
+[2025-05-25T16:57:32.309+0000] {taskinstance.py:1957} INFO - Dependencies all met for dep_context=non-requeueable deps ti=<TaskInstance: ptt_macshop_scraper.extract_ptt_articles scheduled__2025-05-24T00:00:00+00:00 [queued]>
+[2025-05-25T16:57:32.313+0000] {taskinstance.py:1957} INFO - Dependencies all met for dep_context=requeueable deps ti=<TaskInstance: ptt_macshop_scraper.extract_ptt_articles scheduled__2025-05-24T00:00:00+00:00 [queued]>
+[2025-05-25T16:57:32.313+0000] {taskinstance.py:2171} INFO - Starting attempt 1 of 1
+[2025-05-25T16:57:32.318+0000] {taskinstance.py:2192} INFO - Executing <Task(PythonOperator): extract_ptt_articles> on 2025-05-24 00:00:00+00:00
+[2025-05-25T16:57:32.321+0000] {standard_task_runner.py:60} INFO - Started process 70 to run task
+[2025-05-25T16:57:32.323+0000] {standard_task_runner.py:87} INFO - Running: ['***', 'tasks', 'run', 'ptt_macshop_scraper', 'extract_ptt_articles', 'scheduled__2025-05-24T00:00:00+00:00', '--job-id', '8', '--raw', '--subdir', 'DAGS_FOLDER/ptt_macshop_dag.py', '--cfg-path', '/tmp/tmpgp_hdqaw']
+[2025-05-25T16:57:32.325+0000] {standard_task_runner.py:88} INFO - Job 8: Subtask extract_ptt_articles
+[2025-05-25T16:57:32.354+0000] {task_command.py:423} INFO - Running <TaskInstance: ptt_macshop_scraper.extract_ptt_articles scheduled__2025-05-24T00:00:00+00:00 [running]> on host 471bda57ed4c
+[2025-05-25T16:57:32.396+0000] {taskinstance.py:2481} INFO - Exporting env vars: AIRFLOW_CTX_DAG_OWNER='***' AIRFLOW_CTX_DAG_ID='ptt_macshop_scraper' AIRFLOW_CTX_TASK_ID='extract_ptt_articles' AIRFLOW_CTX_EXECUTION_DATE='2025-05-24T00:00:00+00:00' AIRFLOW_CTX_TRY_NUMBER='1' AIRFLOW_CTX_DAG_RUN_ID='scheduled__2025-05-24T00:00:00+00:00'
+[2025-05-25T16:57:32.714+0000] {python.py:201} INFO - Done. Returned value was: None
+[2025-05-25T16:57:32.721+0000] {taskinstance.py:1138} INFO - Marking task as SUCCESS. dag_id=ptt_macshop_scraper, task_id=extract_ptt_articles, execution_date=20250524T000000, start_date=20250525T165732, end_date=20250525T165732
+[2025-05-25T16:57:32.765+0000] {local_task_job_runner.py:234} INFO - Task exited with return code 0
+[2025-05-25T16:57:32.778+0000] {taskinstance.py:3281} INFO - 1 downstream tasks scheduled from follow-on schedule check
