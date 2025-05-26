@@ -1,0 +1,30 @@
+# 環境變數與敏感資訊
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg
+*.egg-info/
+
+# Airflow
+logs/
+airflow.db
+unittests.cfg
+webserver_config.py
+
+# Postgres（若有資料持久化）
+pgdata/
+
+# Docker
+.docker/
+*.pid
+
+# 編輯器與 IDE
+.vscode/
+.idea/
+
+# macOS 特有檔案
+.DS_Store
