@@ -12,23 +12,24 @@ default_args = {
 with DAG(
     "ptt_macshop_scraper",
     default_args=default_args,
-    schedule_interval="@daily",  # 每天執行一次
+    schedule_interval="@daily",
     catchup=False,
     tags=["ptt", "macshop", "postgres"],
 ) as dag:
 
     def extract_articles(**context):
         url = "https://www.ptt.cc/bbs/MacShop/index.html"
-        cookies = {'over18': '1'}  # PTT 需要滿18 cookie
+        cookies = {'over18': '1'}
         res = requests.get(url, cookies=cookies)
         soup = BeautifulSoup(res.text, 'html.parser')
 
         articles = []
         for entry in soup.select("div.r-ent"):
             try:
-                title = entry.select_one("div.title").text.strip()
-                href = entry.select_one("div.title a")["href"]
-                link = "https://www.ptt.cc" + href
+                title_div = entry.select_one("div.title")
+                a_tag = title_div.select_one("a")
+                title = title_div.text.strip()
+                link = "https://www.ptt.cc" + a_tag["href"] if a_tag else None
                 author = entry.select_one("div.author").text.strip()
                 date = entry.select_one("div.date").text.strip()
 
@@ -39,8 +40,10 @@ with DAG(
                     "link": link
                 })
             except Exception as e:
+                print(f"Error parsing entry: {e}")
                 continue
 
+        print(f"Collected {len(articles)} articles")
         context['ti'].xcom_push(key='articles', value=articles)
 
     def load_articles_to_postgres(**context):
@@ -53,7 +56,7 @@ with DAG(
             title TEXT,
             author TEXT,
             date TEXT,
-            link TEXT UNIQUE
+            link TEXT
         );
         """
         pg_hook.run(create_table_sql)
@@ -62,7 +65,7 @@ with DAG(
             insert_sql = """
             INSERT INTO ptt_macshop_articles (title, author, date, link)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (link) DO NOTHING;
+            ON CONFLICT DO NOTHING;
             """
             pg_hook.run(insert_sql, parameters=(article['title'], article['author'], article['date'], article['link']))
 
