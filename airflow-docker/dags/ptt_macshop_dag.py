@@ -1,3 +1,4 @@
+# 20250630_001 - Pochun Hsu - This is a simple example for scrawl the latrest page of PTT MacShop. 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
