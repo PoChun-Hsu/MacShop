@@ -1,5 +1,7 @@
-# 20250702_001 - PoChun Hsu - [Alter] batch insert replace insert row by row.
-# 20250702_002 - PoChun Hsu - [Alter] web crawler with multi thread.
+# 20250702_001 - PoChun Hsu - [Alter]  batch insert replace insert row by row.
+# 20250702_002 - PoChun Hsu - [Alter]  web crawler with multi thread.
+# 20250703_001 - PoChun Hsu - [Create] Implemented rotation of 20 predefined headers to emulate diverse client behavior and bypass PTT anti-crawling measures.
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -10,11 +12,53 @@ import concurrent.futures
 import random
 import time
 
-BATCH_SIZE = 10 # 20250702_002
-# 控制最大 thread 數，建議不要超過 5~10，避免被 ban
-CONCURRENT_SIZE = 5 # 20250702_001
 PTT_BOARD = "MacShop"
 DEFAULT_START_DATE = datetime(2025, 5, 1)
+BATCH_SIZE = 10 # 20250702_002
+# 控制最大 thread 數，建議不要超過 5~10，避免被 ban
+CONCURRENT_SIZE = 20 # 20250702_001
+
+# 20250703_001 >>
+# 定義多種設備，避免被判定成機器人，更像不同使用者
+USER_AGENTS = [
+    # Chrome - Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+
+    # Chrome - Mac
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_0_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15",
+
+    # Edge - Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.2365.80",
+
+    # Firefox - Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+
+    # Firefox - Mac
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.13; rv:120.0) Gecko/20100101 Firefox/120.0",
+
+    # Safari - Mac
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
+
+    # iPhone
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+
+    # Android
+    "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+
+    # iPad
+    "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+]
+# 20250703_001 <<
 
 default_args = {
     "start_date": DEFAULT_START_DATE,
@@ -23,7 +67,8 @@ default_args = {
 def get_max_page():
     url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index.html"
     cookies = {'over18': '1'}
-    res = requests.get(url, cookies=cookies)
+    headers = {"User-Agent": random.choice(USER_AGENTS)} # 20250703_001
+    res = requests.get(url, cookies=cookies, headers=headers) # 20250703_001
     soup = BeautifulSoup(res.text, 'html.parser')
     btn = soup.select_one('div.btn-group-paging a.btn.wide:nth-child(2)')
     if btn and 'index' in btn['href']:
@@ -60,11 +105,12 @@ def prepare_temp_table():
 
 def fetch_ptt_page(page_num):
     cookies = {'over18': '1'}
-    url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index{page_num}.html"
+    headers = {"User-Agent": random.choice(USER_AGENTS)} # 20250703_001
+    url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index{page_num}.html" # 20250703_001
     # 避免被 ban，加隨機 slee
     time.sleep(random.uniform(0.5, 1.0))
     try:
-        res = requests.get(url, cookies=cookies)
+        res = requests.get(url, cookies=cookies, headers=headers)
         if not res.ok:
             print(f"Error fetching page {page_num}")
             return []
@@ -84,7 +130,9 @@ def fetch_ptt_page(page_num):
                     try:
                         # 這裡也建議加 sleep
                         #time.sleep(random.uniform(0.1, 0.4))
-                        art_res = requests.get(link, cookies=cookies)
+                        # 單獨每次再換一次 UA
+                        art_headers = {"User-Agent": random.choice(USER_AGENTS)} # 20250703_001
+                        art_res = requests.get(link, cookies=cookies, headers=art_headers) # 20250703_001
                         art_soup = BeautifulSoup(art_res.text, "html.parser")
                         meta_values = art_soup.select('span.article-meta-value')
                         if len(meta_values) >= 4:
