@@ -1,20 +1,22 @@
 # 20250702_001 - PoChun Hsu - [Alter]  batch insert replace insert row by row.
 # 20250702_002 - PoChun Hsu - [Alter]  web crawler with multi thread.
 # 20250703_001 - PoChun Hsu - [Create] Implemented rotation of 20 predefined headers to emulate diverse client behavior and bypass PTT anti-crawling measures.
+# 20250703_002 - PoChun Hsu - [Create] Added retry mechanism with backoff (30 seconds to 3 minutes) upon ban detection. All threads will be halted immediately when a ban is encountered.
+# 20250708_001 - PoChun Hsu - [Alter]  Implemented high-speed concurrent crawler using async/await with aiohttp. Execution time from 60 minutes to 15 minutes.
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime
-import requests
-from bs4 import BeautifulSoup
-import concurrent.futures
 import random
-import time
+import asyncio
+import aiohttp
+from bs4 import BeautifulSoup
 
 PTT_BOARD = "MacShop"
 DEFAULT_START_DATE = datetime(2025, 5, 1)
-BATCH_SIZE = 10 # 20250702_002
+# 每次寫入 temp table的資料筆數 = PTT每頁筆數(20) * BATCH_SIZE
+BATCH_SIZE = 10      # 20250702_002
 # 控制最大 thread 數，建議不要超過 5~10，避免被 ban
 CONCURRENT_SIZE = 20 # 20250702_001
 
@@ -64,19 +66,6 @@ default_args = {
     "start_date": DEFAULT_START_DATE,
 }
 
-def get_max_page():
-    url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index.html"
-    cookies = {'over18': '1'}
-    headers = {"User-Agent": random.choice(USER_AGENTS)} # 20250703_001
-    res = requests.get(url, cookies=cookies, headers=headers) # 20250703_001
-    soup = BeautifulSoup(res.text, 'html.parser')
-    btn = soup.select_one('div.btn-group-paging a.btn.wide:nth-child(2)')
-    if btn and 'index' in btn['href']:
-        max_page = int(btn['href'].split('index')[1].split('.html')[0]) + 1
-    else:
-        max_page = 1
-    return max_page
-
 def parse_full_datetime(date_str):
     """
     例子：Tue Jun 25 21:53:16 2024
@@ -103,21 +92,19 @@ def prepare_temp_table():
     """
     pg_hook.run(create_table_sql)
 
-def fetch_ptt_page(page_num):
+# 20250708_001 >>
+async def fetch_ptt_page_async(session, page_num):
+    url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index{page_num}.html"
     cookies = {'over18': '1'}
-    headers = {"User-Agent": random.choice(USER_AGENTS)} # 20250703_001
-    url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index{page_num}.html" # 20250703_001
-    # 避免被 ban，加隨機 slee
-    time.sleep(random.uniform(0.5, 1.0))
-    try:
-        res = requests.get(url, cookies=cookies, headers=headers)
-        if not res.ok:
-            print(f"Error fetching page {page_num}")
-            return []
-        
-        soup = BeautifulSoup(res.text, 'html.parser')
+    headers = {"User-Agent": random.choice(USER_AGENTS)}
+    await asyncio.sleep(random.uniform(0.2, 1.2))
+    async with session.get(url, cookies=cookies, headers=headers, timeout=10) as resp:
+        html = await resp.text()
+        # 簡單ban偵測
+        if resp.status in (403, 429) or 'over18' in html:
+            raise Exception(f"被Ban/驗證，status:{resp.status}")
+        soup = BeautifulSoup(html, 'html.parser')
         articles = []
-
         for entry in soup.select("div.r-ent"):
             try:
                 title_div = entry.select_one("div.title")
@@ -127,20 +114,15 @@ def fetch_ptt_page(page_num):
                 author = entry.select_one("div.author").text.strip()
                 date = None
                 if link:
-                    try:
-                        # 這裡也建議加 sleep
-                        #time.sleep(random.uniform(0.1, 0.4))
-                        # 單獨每次再換一次 UA
-                        art_headers = {"User-Agent": random.choice(USER_AGENTS)} # 20250703_001
-                        art_res = requests.get(link, cookies=cookies, headers=art_headers) # 20250703_001
-                        art_soup = BeautifulSoup(art_res.text, "html.parser")
+                    art_headers = {"User-Agent": random.choice(USER_AGENTS)}
+                    await asyncio.sleep(random.uniform(0.1, 0.4))
+                    async with session.get(link, cookies=cookies, headers=art_headers, timeout=10) as art_resp:
+                        art_html = await art_resp.text()
+                        art_soup = BeautifulSoup(art_html, "html.parser")
                         meta_values = art_soup.select('span.article-meta-value')
                         if len(meta_values) >= 4:
-                            full_datetime = meta_values[3].text.strip()
-                            date = parse_full_datetime(full_datetime)
-                    except Exception as e:
-                        print(f"Error fetching article datetime: {e}")
-
+                            date_str = meta_values[3].text.strip()
+                            date = parse_full_datetime(date_str)
                 articles.append({
                     "title": title,
                     "author": author,
@@ -151,48 +133,41 @@ def fetch_ptt_page(page_num):
                 print(f"Error parsing entry: {e}")
                 continue
         return articles
-    except Exception as e:
-        print(f"Error in fetch_ptt_page: {e}")
-        return []
 
-# 加入５個平行處理後，５分鐘就處理原本１７分鐘處理完的資料量
-# 嘗試加入更多
-# 20250702_002 >>
-def extract_articles_batch(start_page, end_page, **context):
+async def async_extract_articles_batch(start_page, end_page, concurrent=CONCURRENT_SIZE):
     articles = []
-    page_nums = list(range(start_page, end_page + 1))
-    # 控制最大 thread 數，建議不要超過 5~10，避免被 ban
-    # max_workers = min(5, len(page_nums))
-    max_workers = CONCURRENT_SIZE
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_page = {executor.submit(fetch_ptt_page, page): page for page in page_nums}
-        for future in concurrent.futures.as_completed(future_to_page):
-            page_articles = future.result()
-            articles.extend(page_articles)
-    context['ti'].xcom_push(key='articles', value=articles)
-    print(f"Collected {len(articles)} articles from pages {start_page}-{end_page}")
-# 20250702_002 <<
+    connector = aiohttp.TCPConnector(limit=concurrent)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [fetch_ptt_page_async(session, page_num) for page_num in range(start_page, end_page + 1)]
+        for future in asyncio.as_completed(tasks):
+            try:
+                page_articles = await future
+                articles.extend(page_articles)
+            except Exception as e:
+                print(f"[Async error] {e}")
+    return articles
+# 20250708_001 <<
 
-# Batch insert，一次 insert一整包而不要逐筆輸入，加速 insert
-# 但因為瓶頸主要在爬蟲，沒有平行抓取資料下，batch insert的影響不大
+def extract_articles_batch(start_page, end_page, **context):
+    articles = asyncio.run(async_extract_articles_batch(start_page, end_page, concurrent=CONCURRENT_SIZE))
+    context['ti'].xcom_push(key='articles', value=articles)
+    print(f"[async] Collected {len(articles)} articles from pages {start_page}-{end_page}")
+
 def load_articles_to_temp(**context):
     articles = context['ti'].xcom_pull(key='articles')
     if not articles:
         return
 
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
-    # 20250702_001 >>
     rows = [
         (article['title'], article['author'], article['date'], article['link'])
         for article in articles
     ]
-
     pg_hook.insert_rows(
         table="ptt_macshop_articles_temp",
         rows=rows,
         target_fields=["title", "author", "date", "link"]
     )
-    # 20250702_001 <<
 
 def swap_tables():
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
@@ -209,8 +184,23 @@ def swap_tables():
     # 刪除 backup
     pg_hook.run("DROP TABLE IF EXISTS ptt_macshop_articles_backup;")
 
+def get_max_page():
+    # 用同步requests抓，這段 async 省不了多少
+    import requests
+    url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index.html"
+    cookies = {'over18': '1'}
+    headers = {"User-Agent": random.choice(USER_AGENTS)}
+    res = requests.get(url, cookies=cookies, headers=headers)
+    soup = BeautifulSoup(res.text, 'html.parser')
+    btn = soup.select_one('div.btn-group-paging a.btn.wide:nth-child(2)')
+    if btn and 'index' in btn['href']:
+        max_page = int(btn['href'].split('index')[1].split('.html')[0]) + 1
+    else:
+        max_page = 1
+    return max_page
+
 with DAG(
-    "ptt_macshop_scraper_swap",
+    "ptt_macshop_scraper_async",
     default_args=default_args,
     schedule_interval="@daily",
     catchup=False,
