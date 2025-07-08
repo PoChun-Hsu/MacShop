@@ -176,7 +176,7 @@ def load_articles_to_temp(**context):
     pg_hook.insert_rows(
         table="ptt_macshop_articles_temp",
         rows=rows,
-        target_fields=["title", "author", "date", "link", "description"]
+        target_fields=["title", "author", "date", "link", "description"] # 20250708_001
     )
 
 def swap_tables():
