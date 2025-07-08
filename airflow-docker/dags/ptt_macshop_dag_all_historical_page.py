@@ -3,6 +3,7 @@
 # 20250703_001 - PoChun Hsu - [Create] Implemented rotation of 20 predefined headers to emulate diverse client behavior and bypass PTT anti-crawling measures.
 # 20250703_002 - PoChun Hsu - [Create] Added retry mechanism with backoff (30 seconds to 3 minutes) upon ban detection. All threads will be halted immediately when a ban is encountered.
 # 20250708_001 - PoChun Hsu - [Alter]  Implemented high-speed concurrent crawler using async/await with aiohttp. Execution time from 60 minutes to 15 minutes.
+# 20250708_002 - PoChun Hsu - [Add]    Add new columns: description.
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -16,9 +17,9 @@ from bs4 import BeautifulSoup
 PTT_BOARD = "MacShop"
 DEFAULT_START_DATE = datetime(2025, 5, 1)
 # 每次寫入 temp table的資料筆數 = PTT每頁筆數(20) * BATCH_SIZE
-BATCH_SIZE = 10      # 20250702_002
+BATCH_SIZE = 100      # 20250702_002
 # 控制最大 thread 數，建議不要超過 5~10，避免被 ban
-CONCURRENT_SIZE = 20 # 20250702_001
+CONCURRENT_SIZE = 100 # 20250702_001
 
 # 20250703_001 >>
 # 定義多種設備，避免被判定成機器人，更像不同使用者
@@ -87,9 +88,10 @@ def prepare_temp_table():
         title TEXT,
         author TEXT,
         date TIMESTAMP,
-        link TEXT
+        link TEXT,
+        description TEXT
     );
-    """
+    """ # 20250708_001
     pg_hook.run(create_table_sql)
 
 # 20250708_001 >>
@@ -123,11 +125,19 @@ async def fetch_ptt_page_async(session, page_num):
                         if len(meta_values) >= 4:
                             date_str = meta_values[3].text.strip()
                             date = parse_full_datetime(date_str)
+
+                        # 20250708_002 >>
+                        # 取得文章主體內容
+                        content_div = art_soup.select_one("#main-content")
+                        description = content_div.get_text(separator="\n", strip=True) if content_div else None
+                        # 20250708_002 <<
+
                 articles.append({
                     "title": title,
                     "author": author,
                     "date": date,
-                    "link": link
+                    "link": link,
+                    "description": description # 20250708_001
                 })
             except Exception as e:
                 print(f"Error parsing entry: {e}")
@@ -160,13 +170,13 @@ def load_articles_to_temp(**context):
 
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
     rows = [
-        (article['title'], article['author'], article['date'], article['link'])
+        (article['title'], article['author'], article['date'], article['link'], article.get('description')) # 20250708_002
         for article in articles
     ]
     pg_hook.insert_rows(
         table="ptt_macshop_articles_temp",
         rows=rows,
-        target_fields=["title", "author", "date", "link"]
+        target_fields=["title", "author", "date", "link", "description"]
     )
 
 def swap_tables():
