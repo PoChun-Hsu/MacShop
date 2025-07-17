@@ -4,6 +4,7 @@
 # 20250703_002 - PoChun Hsu - [Create] Added retry mechanism with backoff (30 seconds to 3 minutes) upon ban detection. All threads will be halted immediately when a ban is encountered.
 # 20250708_001 - PoChun Hsu - [Alter]  Implemented high-speed concurrent crawler using async/await with aiohttp. Execution time from 60 minutes to 15 minutes.
 # 20250708_002 - PoChun Hsu - [Add]    Add new columns: description.
+# 20250709_001 - PoChun Hsu - [Add]    Add redis to deduplicate.
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -13,6 +14,7 @@ import random
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
+import redis
 
 PTT_BOARD = "MacShop"
 DEFAULT_START_DATE = datetime(2025, 5, 1)
@@ -63,6 +65,10 @@ USER_AGENTS = [
 ]
 # 20250703_001 <<
 
+
+# 建立 Redis 連線（你可以依環境調整 host/port）
+redis_client = redis.Redis(host='redis', port=6379, db=0) # 20250709_001
+
 default_args = {
     "start_date": DEFAULT_START_DATE,
 }
@@ -96,25 +102,45 @@ def prepare_temp_table():
 
 # 20250708_001 >>
 async def fetch_ptt_page_async(session, page_num):
+    # 20250709_001 >>
+    # Redis：檢查全局 ban flag
+    if redis_client.get("ptt:ban_flag") == b"1":
+        print(f"[SKIP] 被 ban 過，跳過 page {page_num}")
+        return []
+    # 20250709_001 <<
+    
     url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index{page_num}.html"
     cookies = {'over18': '1'}
     headers = {"User-Agent": random.choice(USER_AGENTS)}
     await asyncio.sleep(random.uniform(0.2, 1.2))
+
     async with session.get(url, cookies=cookies, headers=headers, timeout=10) as resp:
         html = await resp.text()
+        
         # 簡單ban偵測
         if resp.status in (403, 429) or 'over18' in html:
+            # ban 狀態持續 30秒
+            redis_client.set("ptt:ban_flag", "1", ex=30) # 20250709_001 
             raise Exception(f"被Ban/驗證，status:{resp.status}")
+        
         soup = BeautifulSoup(html, 'html.parser')
         articles = []
+
         for entry in soup.select("div.r-ent"):
             try:
                 title_div = entry.select_one("div.title")
                 a_tag = title_div.select_one("a")
                 title = title_div.text.strip()
                 link = "https://www.ptt.cc" + a_tag["href"] if a_tag else None
+                
+                # 20250709_001
+                # ✅ Redis：若已經爬過此 link，跳過
+                if not link or redis_client.sismember("ptt:macshop:crawled_links", link):
+                    continue
+                
                 author = entry.select_one("div.author").text.strip()
                 date = None
+
                 if link:
                     art_headers = {"User-Agent": random.choice(USER_AGENTS)}
                     await asyncio.sleep(random.uniform(0.1, 0.4))
@@ -132,6 +158,10 @@ async def fetch_ptt_page_async(session, page_num):
                         description = content_div.get_text(separator="\n", strip=True) if content_div else None
                         # 20250708_002 <<
 
+                # 20250709_001
+                # ✅ Redis：標記這篇文章已經爬過（加入 Set）
+                redis_client.sadd("ptt:macshop:crawled_links", link)
+
                 articles.append({
                     "title": title,
                     "author": author,
@@ -139,9 +169,11 @@ async def fetch_ptt_page_async(session, page_num):
                     "link": link,
                     "description": description # 20250708_001
                 })
+                
             except Exception as e:
                 print(f"Error parsing entry: {e}")
                 continue
+
         return articles
 
 async def async_extract_articles_batch(start_page, end_page, concurrent=CONCURRENT_SIZE):
@@ -209,8 +241,14 @@ def get_max_page():
         max_page = 1
     return max_page
 
+# 20250717_001 >>
+def clear_redis_keys():
+    redis_client.delete("ptt:macshop:crawled_links")
+    print("✅ Cleared Redis key: ptt:macshop:crawled_links")
+# 20250717_001 <<
+
 with DAG(
-    "ptt_macshop_scraper_async",
+    "ptt_macshop_scraper_full_async",
     default_args=default_args,
     schedule_interval="@daily",
     catchup=False,
@@ -256,4 +294,10 @@ with DAG(
         python_callable=swap_tables,
     )
 
-    prepare_temp >> gen_batches >> process_batches >> swap
+    clear_redis = PythonOperator(
+        task_id='clear_redis_keys',
+        python_callable=clear_redis_keys,
+    )
+
+
+    prepare_temp >> gen_batches >> process_batches >> swap >> clear_redis
