@@ -11,6 +11,7 @@
 # 20250724_001 - PoChun Hsu - [Alter]  Column: link with UNIQUE
 # 20250724_002 - PoChun Hsu - [Add]    Column: updated_at. Log the time of data updates.
 # 20250724_003 - PoChun Hsu - [Alter]  Daily update to Manually update.
+# 20250724_004 - PoChun Hsu - [Alter]  Capitalize the table name and column name 
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
