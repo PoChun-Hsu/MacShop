@@ -8,11 +8,14 @@
 # 20250709_001 - PoChun Hsu - [Alter]  Create tables in PostgreSQL if not exist.
 # 20250717_002 - PoChun Hsu - [Add]    New table: ptt_macshop_page_dates. Accelerate incremental sync.  
 # 20250717_003 - PoChun Hsu - [Add]    New column: description_hash in ptt_macshop_page_dates. Easier to check if the description is changed.
+# 20250724_001 - PoChun Hsu - [Alter]  Column: link with UNIQUE
+# 20250724_002 - PoChun Hsu - [Add]    Column: updated_at. Log the time of data updates.
+# 20250724_003 - PoChun Hsu - [Alter]  Daily update to Manually update.
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-from datetime import datetime
+from datetime import datetime, timezone
 import random
 import asyncio
 import aiohttp
@@ -92,16 +95,17 @@ def prepare_temp_table():
     
     # 建構 Article相關 tables 
     # 如果 temp table 已存在就刪除，確保 temp table是空的
-    pg_hook.run("DROP TABLE IF EXISTS ptt_macshop_articles_temp;", autocommit=True)
+    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Articles_Temp;", autocommit=True)
     create_articles_temp_table_sql = """
-    CREATE TABLE ptt_macshop_articles_temp (
-        id SERIAL PRIMARY KEY,
-        title TEXT,
-        author TEXT,
-        date TIMESTAMP,
-        link TEXT,
-        description TEXT,
-        description_hash TEXT
+    CREATE TABLE Ptt_Macshop_Articles_Temp (
+        Id SERIAL PRIMARY KEY,
+        Title TEXT,
+        Author TEXT,
+        Created_Date TIMESTAMP,
+        Link TEXT UNIQUE, -- # 20250724_001
+        Description TEXT,
+        Description_Hash TEXT,
+        Updated_Date TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- # 20250724_002 
     );
     """ # 20250708_001
     pg_hook.run(create_articles_temp_table_sql, autocommit=True)
@@ -110,14 +114,15 @@ def prepare_temp_table():
     # 20250717_001 >>
     # 如果 formal table 不存在要創建，已存在就保留
     create_articles_table_sql = """
-        CREATE TABLE IF NOT EXISTS ptt_macshop_articles (
-            id SERIAL PRIMARY KEY,
-            title TEXT,
-            author TEXT,
-            date TIMESTAMP,
-            link TEXT,
-            description TEXT,
-            description_hash TEXT
+        CREATE TABLE IF NOT EXISTS Ptt_Macshop_Articles (
+            Id SERIAL PRIMARY KEY,
+            Title TEXT,
+            Author TEXT,
+            Created_Date TIMESTAMP,
+            Link TEXT UNIQUE, -- # 20250724_001
+            Description TEXT,
+            Description_Hash TEXT,
+            Updated_Date TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- # 20250724_002 
         );
     """
     pg_hook.run(create_articles_table_sql, autocommit=True)
@@ -127,13 +132,13 @@ def prepare_temp_table():
     #20250717_002 >>
     # 建構 Ptt 每一頁對應的最小最大日期相關 tables 
     # 如果 temp table 已存在就刪除，確保 temp table是空的
-    pg_hook.run("DROP TABLE IF EXISTS ptt_macshop_page_dates_temp;", autocommit=True)
+    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Temp;", autocommit=True)
     create_page_dates_temp_table_sql = """
-        CREATE TABLE IF NOT EXISTS ptt_macshop_page_dates_temp (
-            page_num INTEGER PRIMARY KEY,
-            url TEXT,
-            min_date TIMESTAMP,
-            max_date TIMESTAMP
+        CREATE TABLE IF NOT EXISTS Ptt_Macshop_Page_Dates_Temp (
+            Page_Num INTEGER PRIMARY KEY,
+            Url TEXT,
+            Min_Date TIMESTAMP,
+            Max_Date TIMESTAMP
         );
     """
     pg_hook.run(create_page_dates_temp_table_sql, autocommit=True)
@@ -142,11 +147,11 @@ def prepare_temp_table():
 
     # 如果 formal table 不存在要創建，已存在就保留
     create_page_dates_table_sql = """
-        CREATE TABLE IF NOT EXISTS ptt_macshop_page_dates (
-            page_num INTEGER PRIMARY KEY,
-            url TEXT,
-            min_date TIMESTAMP,
-            max_date TIMESTAMP
+        CREATE TABLE IF NOT EXISTS Ptt_Macshop_Page_Dates (
+            Page_Num INTEGER PRIMARY KEY,
+            Url TEXT,
+            Min_Date TIMESTAMP,
+            Max_Date TIMESTAMP
         );
     """
     pg_hook.run(create_page_dates_table_sql, autocommit=True)
@@ -223,12 +228,13 @@ async def fetch_ptt_page_async(session, page_num):
                 redis_client.sadd("ptt:macshop:crawled_links", link)
 
                 articles.append({
-                    "title": title,
-                    "author": author,
-                    "date": date,
-                    "link": link,
-                    "description": description, # 20250708_001
-                    "description_hash": description_hash # 20250717_003
+                    "Title": title,
+                    "Author": author,
+                    "Created_Date": date,
+                    "Link": link,
+                    "Description": description, # 20250708_001
+                    "Description_Hash": description_hash # 20250717_003
+                    # 20250724_001: 這裡不用 updated_at欄位，最後寫入 temp table在統一寫就好 
                 })
                 
             except Exception as e:
@@ -238,7 +244,7 @@ async def fetch_ptt_page_async(session, page_num):
         # 20250717_002 >>
         # 在 return 前記錄 min/max date
         if articles:
-            valid_dates = [a["date"] for a in articles if a["date"]]
+            valid_dates = [a["Created_Date"] for a in articles if a["Created_Date"]]
             if valid_dates:
                 min_date = min(valid_dates)
                 max_date = max(valid_dates)
@@ -246,11 +252,11 @@ async def fetch_ptt_page_async(session, page_num):
                 pg_hook = PostgresHook(postgres_conn_id="postgres_default")
                 pg_hook.run(
                     """
-                    INSERT INTO ptt_macshop_page_dates_temp (page_num, url, min_date, max_date)
+                    INSERT INTO ptt_macshop_page_dates_temp (Page_Num, Url, Min_date, Max_date)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (page_num) DO UPDATE
-                    SET min_date = EXCLUDED.min_date,
-                        max_date = EXCLUDED.max_date;
+                    ON CONFLICT (Page_Num) DO UPDATE
+                    SET Min_Date = EXCLUDED.Min_Date,
+                        Max_Date = EXCLUDED.Max_Date;
                     """,
                     parameters=(page_num, url, min_date, max_date),
                     autocommit=True
@@ -286,63 +292,65 @@ def load_articles_to_temp(**context):
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
     rows = [
         (
-            article['title'],
-            article['author'],
-            article['date'],
-            article['link'],
-            article.get('description'),
-            article.get('description_hash')
+            article['Title'],
+            article['Author'],
+            article['Created_Date'],
+            article['Link'],
+            article.get('Description'),      # 20250708_001
+            article.get('Description_Hash'), # 20250717_003
+            datetime.now(timezone.utc)       # 20250724_002
         )
         for article in articles
     ]
     pg_hook.insert_rows(
-        table="ptt_macshop_articles_temp",
+        table="Ptt_Macshop_Articles_Temp",
         rows=rows,
         target_fields=[
-            "title", 
-            "author", 
-            "date", 
-            "link", 
-            "description", # 20250708_001
-            "description_hash" # 20250717_003
-        ] 
+            "Title",
+            "Author",
+            "Created_Date",
+            "Link",
+            "Description",
+            "Description_Hash",
+            "Updated_Date"
+        ]
     )
 
 def swap_tables():
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
     # 如果 backup 存在，先刪掉
-    pg_hook.run("DROP TABLE IF EXISTS ptt_macshop_articles_backup;", autocommit=True)
+    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Articles_Backup;", autocommit=True)
     # 如果正式表存在，rename 成 backup
     result = pg_hook.get_first("""
-        SELECT to_regclass('public.ptt_macshop_articles') IS NOT NULL;
+        SELECT to_regclass('public.Ptt_Macshop_Articles') IS NOT NULL;
     """)
     if result and result[0]:
-        pg_hook.run("ALTER TABLE ptt_macshop_articles RENAME TO ptt_macshop_articles_backup;", autocommit=True)
+        pg_hook.run("ALTER TABLE Ptt_Macshop_Articles RENAME TO Ptt_Macshop_Articles_Backup;", autocommit=True)
     # temp rename to 正式表
-    pg_hook.run("ALTER TABLE ptt_macshop_articles_temp RENAME TO ptt_macshop_articles;", autocommit=True)
+    pg_hook.run("ALTER TABLE Ptt_Macshop_Articles_Temp RENAME TO Ptt_Macshop_Articles;", autocommit=True)
     
-    pg_hook.run("CREATE INDEX IF NOT EXISTS idx_description_hash ON ptt_macshop_articles(description_hash);", autocommit=True) # 20250717_003
+    pg_hook.run("CREATE INDEX IF NOT EXISTS idx_description_hash ON Ptt_Macshop_Articles(Description_Hash);", autocommit=True) # 20250717_003
 
     # 刪除 backup
-    pg_hook.run("DROP TABLE IF EXISTS ptt_macshop_articles_backup;", autocommit=True)
+    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Articles_Backup;", autocommit=True)
 
     # 20250717_002 >>
     # 如果 backup 存在，先刪掉
-    pg_hook.run("DROP TABLE IF EXISTS ptt_macshop_page_dates_backup;", autocommit=True)
+    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
     # 如果正式表存在，rename 成 backup
     result = pg_hook.get_first("""
-        SELECT to_regclass('public.ptt_macshop_page_dates') IS NOT NULL;
+        SELECT to_regclass('public.Ptt_Macshop_Page_Dates') IS NOT NULL;
     """)
     if result and result[0]:
-        pg_hook.run("ALTER TABLE ptt_macshop_page_dates RENAME TO ptt_macshop_page_dates_backup;", autocommit=True)
+        pg_hook.run("ALTER TABLE Ptt_Macshop_Page_Dates RENAME TO Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
     # temp rename to 正式表
-    pg_hook.run("ALTER TABLE ptt_macshop_page_dates_temp RENAME TO ptt_macshop_page_dates;", autocommit=True)
+    pg_hook.run("ALTER TABLE Ptt_Macshop_Page_Dates_Temp RENAME TO Ptt_Macshop_Page_Dates;", autocommit=True)
     # 刪除 backup
-    pg_hook.run("DROP TABLE IF EXISTS ptt_macshop_page_dates_backup;", autocommit=True)
+    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
 
     create_page_dates_index_sql = """
-    CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_min_date ON ptt_macshop_page_dates(min_date);
-    CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_max_date ON ptt_macshop_page_dates(max_date);
+    CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_min_date ON Ptt_Macshop_Page_Dates(Min_Date);
+    CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_max_date ON Ptt_Macshop_Page_Dates(Max_Date);
     """
     pg_hook.run(create_page_dates_index_sql, autocommit=True)
     # 20250717_002 <<
@@ -364,14 +372,14 @@ def get_max_page():
 
 # 20250717_001 >>
 def clear_redis_keys():
-    redis_client.delete("ptt:macshop:crawled_links")
-    print("✅ Cleared Redis key: ptt:macshop:crawled_links")
+    redis_client.delete("Ptt:Macshop:Crawled_Links")
+    print("✅ Cleared Redis key: Ptt:Macshop:Crawled_Links")
 # 20250717_001 <<
 
 with DAG(
     "ptt_macshop_scraper_full_async",
     default_args=default_args,
-    schedule_interval="@daily",
+    schedule_interval=None,  # 20250724_003
     catchup=False,
     tags=["ptt", "macshop", "postgres"],
 ) as dag:
