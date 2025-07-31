@@ -1,5 +1,7 @@
 # 20250709_001 - PoChun Hsu - [Drop]    Drop PIP_ADDITIONAL_REQUIREMENTS. Change to use pip install from requirement.txt.
 # 20250709_002 - PoChun Hsu - [Add]     Add redis
+# 20250728_001 - PoChun Hsu - [Add]     Add Spark
+# 20250729_001 - PoChun Hsu - [Add]     Add Jupyter Notebook
 version: '3.8'
 
 x-airflow-common:
@@ -48,6 +50,68 @@ services:
       - "5540:5540"
 
   # 20250709_002 <<
+
+  # 20250729_002 >>
+  jar-downloader:
+    image: curlimages/curl
+    command: >
+      sh -c "mkdir -p /downloads &&
+             curl -L -o /downloads/postgresql-42.7.3.jar https://jdbc.postgresql.org/download/postgresql-42.7.3.jar"
+    volumes:
+      - ./spark_jars:/downloads
+  # 20250729_002 <<
+
+  # 20250728_001 >>
+  spark:
+    container_name: spark
+    image: bitnami/spark:3.5.0
+    command: /opt/bitnami/spark/sbin/start-master.sh
+    environment:
+      - SPARK_MODE=master   # 必須是 master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_DIRS=/tmp
+    ports:
+      - "8088:8080"   # Spark Master UI
+      - "7077:7077"
+      - "4040:4040"
+    volumes:
+      - ./spark_app:/opt/spark-apps
+      - ./spark_jars:/opt/spark/jars
+
+
+  spark-worker:
+    image: bitnami/spark:3.5.0
+    command: /opt/bitnami/spark/sbin/start-worker.sh spark://spark:7077
+    environment:
+      - SPARK_MODE=worker   # ✅ Worker 模式
+    volumes:
+      - ./spark_jars:/opt/spark/jars
+    depends_on:
+      - spark
+  # 20250728_001 <<
+
+  # 20250729_001 >>
+  jupyter:
+    image: jupyter/pyspark-notebook
+    container_name: jupyter
+    ports:
+      - "8888:8888"
+    command: >
+      start.sh jupyter notebook
+        --ip=0.0.0.0
+        --port=8888
+        --NotebookApp.token=''
+        --NotebookApp.password=''
+        --NotebookApp.disable_check_xsrf=True
+    environment:
+      - PYSPARK_SUBMIT_ARGS=--jars /home/jovyan/spark_jars/postgresql-42.7.3.jar --master spark://spark:7077 pyspark-shell
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./spark_jars:/home/jovyan/spark_jars
+    depends_on:
+      - spark
+  # 20250729_001 <<
 
   airflow-webserver:
     <<: *airflow-common
