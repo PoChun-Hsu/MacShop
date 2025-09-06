@@ -2,11 +2,15 @@
 # 20250709_002 - PoChun Hsu - [Add]     Add redis
 # 20250728_001 - PoChun Hsu - [Add]     Add Spark
 # 20250729_001 - PoChun Hsu - [Add]     Add Jupyter Notebook
-version: '3.8'
+# 20250906_001 - PoChun Hsu - [Drop]    Version which is not needed.
+# 20250906_002 - PoChun Hsu - [Drop]    Jupyter Notebook which is not needed.
+# 20250906_003 - PoChun Hsu - [Alter]   Airflow version to 2.11.0. The latest version of 2.x
+
+# version: '3.8' # 20250906_001
 
 x-airflow-common:
   &airflow-common
-  image: apache/airflow:2.8.0
+  image: apache/airflow:2.11.0 # 20250906_003
   environment:
     &airflow-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -91,27 +95,10 @@ services:
       - spark
   # 20250728_001 <<
 
+  # 20250906_002 >>
   # 20250729_001 >>
-  jupyter:
-    image: jupyter/pyspark-notebook
-    container_name: jupyter
-    ports:
-      - "8888:8888"
-    command: >
-      start.sh jupyter notebook
-        --ip=0.0.0.0
-        --port=8888
-        --NotebookApp.token=''
-        --NotebookApp.password=''
-        --NotebookApp.disable_check_xsrf=True
-    environment:
-      - PYSPARK_SUBMIT_ARGS=--jars /home/jovyan/spark_jars/postgresql-42.7.3.jar --master spark://spark:7077 pyspark-shell
-    volumes:
-      - ./notebooks:/home/jovyan/work
-      - ./spark_jars:/home/jovyan/spark_jars
-    depends_on:
-      - spark
   # 20250729_001 <<
+  # 20250906_002 <<
 
   airflow-webserver:
     <<: *airflow-common
