@@ -1,0 +1,23 @@
+# Dockerfile.spark
+FROM bitnami/spark:3.5.0
+
+# 使用 root 來放置檔案
+USER 0
+
+# 建議在 build 時就把 JDBC 驅動放進去，避免額外 sidecar
+# 建立 jars 目錄並直接用 ADD 抓取 JDBC driver
+RUN mkdir -p /opt/bitnami/spark/jars
+ADD https://jdbc.postgresql.org/download/postgresql-42.7.3.jar /opt/bitnami/spark/jars/
+
+# 放你的 Spark/PySpark apps（保留 volume 也行；兩者擇一或並存）
+# 如果你想要 build 固定版本的 app：
+# COPY spark_app/ /opt/spark-apps/
+
+# 建立預設 apps 目錄，供你用 volume 掛載
+RUN mkdir -p /opt/spark-apps
+
+# 安裝 PySpark
+RUN pip install --no-cache-dir pyspark==3.5.0
+
+# 還原使用者
+USER 1001
