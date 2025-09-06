@@ -5,12 +5,17 @@
 # 20250906_001 - PoChun Hsu - [Drop]    Version which is not needed.
 # 20250906_002 - PoChun Hsu - [Drop]    Jupyter Notebook which is not needed.
 # 20250906_003 - PoChun Hsu - [Alter]   Airflow version to 2.11.0. The latest version of 2.x
+# 20250906_004 - PoChun Hsu - [Add]     Airflow install into Dockerfile.airflow
+# 20250906_003 - PoChun Hsu - [Add]     Sparkinstall into Dockerfile.spark
 
 # version: '3.8' # 20250906_001
 
 x-airflow-common:
   &airflow-common
-  image: apache/airflow:2.11.0 # 20250906_003
+  image: local/airflow:2.11.0-pc1 # 20250906_003 #20250906_004
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
   environment:
     &airflow-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -25,7 +30,7 @@ x-airflow-common:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
-    - ./requirements.txt:/requirements.txt # 20250709_001 
+    # - ./requirements.txt:/requirements.txt # 20250709_001 #20250906_004
   user: "${AIRFLOW_UID}:0"
   depends_on:
     - postgres
@@ -55,20 +60,27 @@ services:
 
   # 20250709_002 <<
 
+  # 20250906_005 >>
   # 20250729_002 >>
-  jar-downloader:
-    image: curlimages/curl
-    command: >
-      sh -c "mkdir -p /downloads &&
-             curl -L -o /downloads/postgresql-42.7.3.jar https://jdbc.postgresql.org/download/postgresql-42.7.3.jar"
-    volumes:
-      - ./spark_jars:/downloads
+  # jar-downloader:
+  #   image: curlimages/curl
+  #   command: >
+  #     sh -c "mkdir -p /downloads &&
+  #            curl -L -o /downloads/postgresql-42.7.3.jar https://jdbc.postgresql.org/download/postgresql-42.7.3.jar"
+  #   volumes:
+  #     - ./spark_jars:/downloads
   # 20250729_002 <<
+  # 20250906_005 <<
 
   # 20250728_001 >>
   spark:
     container_name: spark
-    image: bitnami/spark:3.5.0
+    # 20250906_005 >>
+    image: local/spark:3.5.0
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    # 20250906_005 <<
     command: /opt/bitnami/spark/sbin/start-master.sh
     environment:
       - SPARK_MODE=master   # 必須是 master
@@ -81,16 +93,21 @@ services:
       - "4040:4040"
     volumes:
       - ./spark_app:/opt/spark-apps
-      - ./spark_jars:/opt/spark/jars
+      # - ./spark_jars:/opt/spark/jars # 20250906_005
 
 
   spark-worker:
-    image: bitnami/spark:3.5.0
+    # 20250906_005 >>
+    image: local/spark:3.5.0
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    # 20250906_005 <<
     command: /opt/bitnami/spark/sbin/start-worker.sh spark://spark:7077
     environment:
       - SPARK_MODE=worker   # ✅ Worker 模式
-    volumes:
-      - ./spark_jars:/opt/spark/jars
+    # volumes:
+    #   - ./spark_jars:/opt/spark/jars # 20250906_005
     depends_on:
       - spark
   # 20250728_001 <<
@@ -116,8 +133,9 @@ services:
 
   airflow-init:
     <<: *airflow-common
-    # 20250709_001 
-    command: bash -c "pip install -r /requirements.txt && airflow db migrate && airflow users create \
+    # 20250709_001
+    # 20250906_004
+    command: bash -c "airflow db migrate && airflow users create \
       --username admin \
       --firstname Admin \
       --lastname User \
