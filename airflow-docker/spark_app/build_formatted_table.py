@@ -21,7 +21,7 @@ PG_DRIVER = "org.postgresql.Driver"
 # ===== 參數（依 DB/資源微調）=====
 READ_NUM_PARTS_MAX = 16           # JDBC 讀取最多分區數
 READ_FETCHSIZE     = "10000"      # JDBC fetch size（Postgres 有效）
-WRITE_COALESCE     = 8            # 控制回寫連線數（= 分區數）
+WRITE_COALESCE     = 2            # 控制回寫連線數（= 分區數）
 WRITE_BATCHSIZE    = "5000"       # JDBC batch size（單次 roundtrip 筆數）
 WRITE_ISOLATION    = "READ_COMMITTED"  # JDBC 交易隔離等級
 SPARK_TZ           = "Asia/Taipei"     # 時區一致性
@@ -309,31 +309,50 @@ df_out = guard("套用欄位抽取/正規化轉換", lambda: transform_articles(
 df_out = df_out.coalesce(WRITE_COALESCE)
 
 print("📐 df_out partitions:", df_out.rdd.getNumPartitions())
-df_out.printSchema()
-df_out.show(5, truncate=False)
+# df_out.printSchema()
+# df_out.show(5, truncate=False)
 
 # ===== 用 df_out 的 schema 重建 _temp（確保欄位 1:1 對齊）=====
 def recreate_temp_from_df_schema(df):
-    # 先把舊的 _temp 丟掉，避免舊版 8 欄殘留
     DriverManager = spark._jvm.java.sql.DriverManager
-    conn = None; stmt = None
+    conn = DriverManager.getConnection(JDBC_URL, DB_USER, DB_PASS)
+    conn.setAutoCommit(True)
+    stmt = conn.createStatement()
     try:
-        conn = DriverManager.getConnection(JDBC_URL, DB_USER, DB_PASS)
-        conn.setAutoCommit(True)
-        stmt = conn.createStatement()
+        # 1) 先砍舊表
         stmt.execute(f'DROP TABLE IF EXISTS public."{TEMP_TABLE}";')
-    finally:
-        if stmt is not None: stmt.close()
-        if conn is not None: conn.close()
 
-    # 用 0 筆資料把表「按 df_out 的 schema」建立起來
-    (df.limit(0)
-       .write.format("jdbc")
-       .option("url", JDBC_URL)
-       .option("dbtable", f'public."{TEMP_TABLE}"')
-       .option("user", DB_USER).option("password", DB_PASS).option("driver", PG_DRIVER)
-       .mode("overwrite")    # 建表用
-       .save())
+        # 2) 直接用 SQL 建 UNLOGGED + TEXT（不受 Spark parser 限制）
+        create_sql = f'''
+        CREATE UNLOGGED TABLE public."{TEMP_TABLE}" (
+          id INTEGER,
+          title TEXT,
+          author TEXT,
+          created_date TIMESTAMP,
+          link TEXT,
+          description TEXT,
+          description_hash TEXT,
+          updated_date TIMESTAMP,
+          product_category TEXT,
+          size_inch DOUBLE PRECISION,
+          ram_gb INTEGER,
+          price_twd BIGINT,
+          battery_health_pct INTEGER,
+          battery_cycles INTEGER,
+          model_number TEXT,
+          model_identifier TEXT,
+          sold_flag BOOLEAN,
+          color TEXT,
+          storage_gb INTEGER,
+          battery_health_bucket TEXT,
+          design_cycle_target INTEGER,
+          health_status_hint TEXT
+        );
+        '''
+        stmt.execute(create_sql)
+    finally:
+        stmt.close()
+        conn.close()
 
 guard("用 df_out schema 重建 _temp", lambda: recreate_temp_from_df_schema(df_out))
 
@@ -365,6 +384,8 @@ jdbc_writer = (
     .option("user", DB_USER).option("password", DB_PASS).option("driver", PG_DRIVER)
     .option("batchsize", WRITE_BATCHSIZE)
     .option("isolationLevel", WRITE_ISOLATION)
+    .option("stringtype", "unspecified")
+    .option("truncate", "false")
 )
 guard("寫入 _temp（JDBC 批次）", lambda: jdbc_writer.mode("append").save())
 print(f"✅ 已寫入：public.\"{TEMP_TABLE}\"")
@@ -394,6 +415,7 @@ def swap_temp_to_final():
         stmt.execute(f'DROP TABLE IF EXISTS public."{DEST_TABLE}_old";')
 
         conn.commit()
+        
         print(f'🎉 已原子替換：public."{DEST_TABLE}"')
     except Exception:
         if conn is not None: conn.rollback()
