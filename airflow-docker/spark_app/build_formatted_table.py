@@ -71,10 +71,11 @@ class SparkWriteTuning:
     read_num_parts_max: int = 16
     read_fetchsize: str = "10000"
     write_coalesce: int = 2
-    write_batchsize: str = "1000"
+    write_batchsize: str = "500"
     write_isolation: str = "READ_COMMITTED"
     spark_timezone: str = "Asia/Taipei"
     repartition_target: Optional[int] = None
+    statement_timeout_seconds: int = 60
 
 # ------------------------------
 # 便利函式
@@ -100,6 +101,84 @@ def get_spark(app_name: str, tz: str):
     )
     spark.sparkContext.setLogLevel("ERROR")
     return spark
+
+# ------------------------------
+# Retry 設置
+# 資料庫寫入異常重試
+# 排除不需要重試的情況，例如 schema錯誤
+# ------------------------------
+import random
+import time
+from pyspark.sql.utils import AnalysisException
+from py4j.protocol import Py4JJavaError
+
+RETRYABLE_SQLSTATES = {"40001", "40P01", "55P03"}  # serialization failure / deadlock / lock not available
+RETRYABLE_SUBSTRINGS = [
+    "Connection reset", "Connection refused", "timeout", "timed out",
+    "could not obtain lock", "deadlock detected", "serialization failure",
+    "canceling statement due to lock timeout"
+]
+
+def is_retryable_jdbc_error(exc: Exception) -> bool:
+    """
+    判斷 JDBC 寫入是否屬於可重試錯誤：
+    - Postgres 常見 SQLSTATE: 40001/40P01/55P03
+    - 常見連線/逾時訊息關鍵字
+    - 排除 schema/語法等不可重試錯誤（例如 AnalysisException）
+    """
+    if isinstance(exc, AnalysisException):
+        return False
+
+    # 從 Py4JJavaError 中往內找 SQLState 或訊息
+    def _msg_chain(e: Exception) -> str:
+        msgs = [str(e)]
+        if isinstance(e, Py4JJavaError):
+            j = e.java_exception
+            try:
+                # java_exception 可能帶 getMessage / getSQLState
+                msgs.append(str(j.getMessage()))
+                try:
+                    sql_state = j.getSQLState()
+                    if sql_state:
+                        msgs.append(f"SQLSTATE={sql_state}")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        return " | ".join(m for m in msgs if m)
+
+    m = _msg_chain(exc)
+    # SQLSTATE 判斷
+    for code in RETRYABLE_SQLSTATES:
+        if f"SQLSTATE={code}" in m or code in m:
+            return True
+    # 關鍵字判斷
+    low = m.lower()
+    return any(s.lower() in low for s in RETRYABLE_SUBSTRINGS)
+
+def with_retry(func, *, max_attempts=5, base_delay=1.0, max_delay=30.0, jitter=True):
+    """
+    對傳入的函式執行指數退避重試。
+    - 只對 is_retryable_jdbc_error 判定為可重試的錯誤才重試
+    - 其他錯誤直接拋出
+    """
+    attempt = 1
+    while True:
+        try:
+            return func()
+        except Exception as e:
+            if attempt >= max_attempts or not is_retryable_jdbc_error(e):
+                # 超過上限或不可重試 → 直接拋出
+                raise
+            # 指數退避 + 抖動
+            # sleep = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            # if jitter:
+            #     # 抖動：在 50%~100% 區間變動
+            #     sleep = sleep * (0.5 + random.random() * 0.5)
+            sleep = max_delay
+            print(f"[retry] 寫入失敗（第 {attempt} 次），{e}. {sleep:.1f}s 後重試...")
+            time.sleep(sleep)
+            attempt += 1
 
 # ------------------------------
 # Regex 與常數（含 test2 價格規則 + test.py 區塊萃取）
@@ -395,6 +474,63 @@ def finalize_price(df: DataFrame) -> DataFrame:
 # ------------------------------
 def derive_misc(df: DataFrame) -> DataFrame:
     return df
+# ------------------------------
+# 買/賣意圖判斷（MacShop 版規/慣用語）
+# ------------------------------
+def classify_trade_intent(df: DataFrame) -> DataFrame:
+    """根據標題/內文判斷此篇文章是「買」(buy) 或「賣」(sell)。
+    規則優先序：
+      1) 以標題開頭標籤較強勢（如 [賣] / [買] / [徵] / WTS / WTB）。
+      2) 若同時包含買與賣關鍵字，優先採用標題命中者；
+         否則若抽得出價格（price_twd 非空），偏向 sell。
+      3) 有否定詞（非賣品/不賣/不收/僅交流）會抵銷對應意圖。
+      4) 無明確訊號則標記為 unknown，方便後續人工校正。
+    """
+    buy_kw   = r"""(?i)(^\s*\[?\s*(買|徵|徵求|收購|求購|WTB)\s*\]?|\b(買|徵求|收購|求購|想收|收)\b)"""
+
+    sell_kw  = r"""(?i)(^\s*\[?\s*(賣|售|出售|讓售|出清|WTS)\s*\]?|\b(賣|售|出售|讓售|出清|出)\b)"""
+
+    trade_kw = r"""(?i)(交換|WTT)"""
+
+    neg_sell = r"""(?i)(非賣品|不賣|無售|僅交流|只交換)"""
+
+    neg_buy  = r"""(?i)(不收|無徵|不買|僅交流|只交換)"""
+
+    # 標題/內文命中
+    title = F.lower(F.coalesce(F.col("title_norm"), F.lit("")))
+    text  = F.lower(F.coalesce(F.col("search_text"), F.lit("")))
+
+    is_buy_title  = title.rlike(buy_kw)
+    is_sell_title = title.rlike(sell_kw)
+    is_buy_text   = text.rlike(buy_kw)
+    is_sell_text  = text.rlike(sell_kw)
+    has_trade     = text.rlike(trade_kw)
+
+    has_neg_sell  = text.rlike(neg_sell)
+    has_neg_buy   = text.rlike(neg_buy)
+
+    is_buy  = (is_buy_title | is_buy_text) & (~has_neg_buy)
+    is_sell = (is_sell_title | is_sell_text) & (~has_neg_sell)
+
+    # 決策
+    trade_intent = (
+        F.when(is_buy & ~is_sell, F.lit("buy"))
+         .when(is_sell & ~is_buy, F.lit("sell"))
+         .when(is_sell & is_buy,
+               F.when(is_sell_title & ~is_buy_title, F.lit("sell"))
+                .when(is_buy_title & ~is_sell_title, F.lit("buy"))
+                .when(F.col("final_price_twd").isNotNull() | F.col("price_twd").isNotNull(), F.lit("sell"))
+                .otherwise(F.lit("unknown"))
+         )
+         .otherwise(
+             F.when((F.col("final_price_twd").isNotNull() | F.col("price_twd").isNotNull()) & ~is_buy, F.lit("sell"))
+              .when(has_trade, F.lit("unknown"))
+              .otherwise(F.lit("unknown"))
+         )
+    )
+
+    return df.withColumn("trade_intent", trade_intent)
+
 
 # ------------------------------
 # 主轉換流程
@@ -411,6 +547,7 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
     df = df.withColumn("price_twd", F.col("final_price_twd"))
 
     df = derive_misc(df)
+    df = classify_trade_intent(df)
 
     # 清理中間欄位
     drop_cols = [
@@ -435,7 +572,7 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
     write_cols = [
         "id","title","author","created_date","link","description","description_hash","updated_date",
         "product_category","size_inch","ram_gb","price_twd",
-        "battery_health_pct","battery_cycles","model_number","model_identifier","sold_flag",
+        "battery_health_pct","battery_cycles","model_number","model_identifier","sold_flag","trade_intent",
         "color","storage_gb","battery_health_bucket","design_cycle_target","health_status_hint","final_rule"
     ]
     return df_out.select(*[c for c in write_cols if c in df_out.columns])
@@ -467,6 +604,7 @@ def recreate_temp_from_df_schema(spark, df_out, cfg: DBConfig):
       model_number TEXT,
       model_identifier TEXT,
       sold_flag BOOLEAN,
+      trade_intent TEXT,
       color TEXT,
       storage_gb INTEGER,
       battery_health_bucket TEXT,
@@ -493,9 +631,143 @@ def write_temp_all(df_out, cfg: DBConfig, tuning: SparkWriteTuning):
         .option("user", cfg.user).option("password", cfg.password).option("driver", cfg.driver)
         .option("batchsize", tuning.write_batchsize)
         .option("isolationLevel", tuning.write_isolation)
+        .option("sessionInitStatement", f"SET statement_timeout = '{tuning.statement_timeout_seconds}s'")
         .mode("append")
         .save()
     )
+
+# ===== 自適應 JDBC 寫入（帶 job timeout + 退避序列）=====
+import time
+import threading
+import uuid
+from pyspark.sql import DataFrame
+from pyspark.sql.utils import AnalysisException, StreamingQueryException
+from py4j.protocol import Py4JJavaError
+
+RETRY_SEQ = [(8,1000),(8,500),(8,200),(8,100),
+             (6,1000),(6,500),(6,300),(6,100),
+             (4,200),(4,100),
+             (2,1000),(2,500),
+             (1,1000),(1,500),(1,200)]  # 可按環境調整；上限建議 ≤ 10000
+
+# 單次嘗試的最長時間（秒）。卡住就主動取消 JobGroup 並丟 TimeoutError。
+ATTEMPT_TIMEOUT_SEC = 60
+
+def _is_retryable_exception(e: Exception) -> bool:
+    msg = repr(e)
+    # 常見包裝：Py4JJavaError → java.sql.BatchUpdateException → org.postgresql.util.PSQLException
+    # 直接用字串判斷 SQLSTATE；你原本應有 is_retryable_jdbc_error，也可沿用。
+    return any(code in msg for code in RETRYABLE_SQLSTATES) or "timeout" in msg.lower()
+
+def _print_effective_opts(url: str, table: str, user: str, driver: str, coalesce: int, batch: int, isolation: str, stmt_timeout_s: int, lock_timeout_s: int, extra_init: str = ""):
+    print("[jdbc-write] EFFECTIVE CONFIG ->",
+          f"url(has_rewrite={ 'reWriteBatchedInserts=true' in url }),",
+          f"table={table}, user={user}, driver={driver},",
+          f"coalesce/numPartitions={coalesce}, batchsize={batch},",
+          f"isolation={isolation}, statement_timeout={stmt_timeout_s}s, lock_timeout={lock_timeout_s}s",
+          f"{'(extra: ' + extra_init + ')' if extra_init else ''}")
+
+def _write_once_with_job_timeout(df: DataFrame, cfg, *, coalesce: int, batch: int, tuning, attempt_timeout_sec: int):
+    """
+    在一個 JobGroup 中執行 df.write.save()；超時就 cancel 該 JobGroup 以解除卡住。
+    """
+    spark = df.sparkSession
+    sc = spark.sparkContext
+    job_group_id = f"jdbc_write_{uuid.uuid4()}"
+    sc.setJobGroup(job_group_id, f"JDBC write coalesce={coalesce}, batch={batch}", interruptOnCancel=True)
+
+    # 組 sessionInitStatement：加快等鎖失敗，避免長時間卡住
+    stmt_timeout = int(getattr(tuning, "statement_timeout_seconds", 600) or 600)
+    lock_timeout = int(getattr(tuning, "lock_timeout_seconds", 2) or 2)
+
+    extra_init = getattr(tuning, "extra_session_init", "") or ""  # 你可設 synchronous_commit=off 只用在 _temp
+    init_stmt = f"SET statement_timeout = '{stmt_timeout}s'; SET lock_timeout = '{lock_timeout}s'; {extra_init}"
+
+    _print_effective_opts(
+        url=cfg.jdbc_url, table=f'public."{cfg.temp_table}"', user=cfg.user, driver=cfg.driver,
+        coalesce=coalesce, batch=batch, isolation=tuning.write_isolation,
+        stmt_timeout_s=stmt_timeout, lock_timeout_s=lock_timeout, extra_init=extra_init.strip()
+    )
+
+    # 寫入動作包成 target()，讓我們能用 thread + join(timeout) 實作牽制
+    err_holder = {"e": None}
+
+    def target():
+        try:
+            (df
+             .coalesce(coalesce)
+             .write
+             .format("jdbc")
+             .option("url", cfg.jdbc_url)  # 請確保包含 reWriteBatchedInserts=true
+             .option("dbtable", f'public."{cfg.temp_table}"')
+             .option("user", cfg.user)
+             .option("password", cfg.password)
+             .option("driver", cfg.driver)
+             .option("batchsize", str(batch))            # ★確保覆蓋到
+             .option("numPartitions", str(coalesce))     # ★限制並行連線
+             .option("isolationLevel", tuning.write_isolation)
+             .option("sessionInitStatement", init_stmt)
+             .mode("append")
+             .save()
+            )
+        except Exception as e:
+            err_holder["e"] = e
+
+    th = threading.Thread(target=target, daemon=True)
+    th.start()
+    th.join(timeout=attempt_timeout_sec)
+
+    if th.is_alive():
+        # 逾時：取消整個 JobGroup，等待它結束，再丟 TimeoutError
+        print(f"[jdbc-write] attempt timed out after {attempt_timeout_sec}s → cancel JobGroup {job_group_id}")
+        try:
+            sc.cancelJobGroup(job_group_id)
+        except Exception as ce:
+            print(f"[jdbc-write] cancelJobGroup error: {ce!r}")
+        # 再給一點緩衝讓 executor 停下來
+        th.join(timeout=10)
+
+        raise TimeoutError(f"JDBC write timed out (> {attempt_timeout_sec}s) for coalesce={coalesce}, batch={batch}")
+
+    if err_holder["e"] is not None:
+        raise err_holder["e"]  # 交給外層判斷是否可重試
+
+
+def adaptive_write_temp(df_out: DataFrame, cfg, tuning,
+                        retry_seq=RETRY_SEQ,
+                        attempt_timeout_sec: int = ATTEMPT_TIMEOUT_SEC,
+                        max_attempts: int | None = None):
+    """
+    失敗就降並行、增批次；單次卡住就 job-cancel 後重試下一組。
+    """
+    attempts = 0
+    max_attempts = max_attempts or len(retry_seq)
+    last_err = None
+    for coalesce, batch in retry_seq[:max_attempts]:
+        attempts += 1
+        print(f"[jdbc-write] try coalesce={coalesce}, batch={batch} (attempt {attempts}/{max_attempts})")
+        try:
+            _write_once_with_job_timeout(
+                df_out, cfg,
+                coalesce=coalesce, batch=batch,
+                tuning=tuning,
+                attempt_timeout_sec=attempt_timeout_sec
+            )
+            print(f"[jdbc-write] success coalesce={coalesce}, batch={batch}")
+            return
+        except Exception as e:
+            last_err = e
+            msg = repr(e)
+            if isinstance(e, TimeoutError):
+                print(f"[jdbc-write] TIMEOUT → next config. detail={msg}")
+                continue
+            if _is_retryable_exception(e):
+                print(f"[jdbc-write] RETRYABLE ({msg}) → next config")
+                continue
+            print(f"[jdbc-write] NON-RETRYABLE ({msg}) → abort")
+            raise
+    # 全部嘗試失敗
+    raise last_err
 
 def swap_temp_to_final(spark, cfg: DBConfig):
     url = cfg.jdbc_url
@@ -531,7 +803,8 @@ def main_spark():
         df_src = guard("JDBC 讀取來源表", lambda: read_src_jdbc(spark, cfg, tuning))
         df_out = guard("轉換（正規化 + 價格抽取 + 欄位）", lambda: transform_articles(df_src, tuning.repartition_target))
         guard("建立 _temp 表（依 schema）", lambda: recreate_temp_from_df_schema(spark, df_out, cfg))
-        guard("寫入 _temp（JDBC 批次）", lambda: write_temp_all(df_out, cfg, tuning))
+        guard("寫入 _temp（JDBC 自適應）",
+            lambda: adaptive_write_temp(df_out, cfg, tuning))
         guard("交換 _temp → 正式表（交易內 rename swap）", lambda: swap_temp_to_final(spark, cfg))
         print("🎯 完成 Pipeline")
     finally:
