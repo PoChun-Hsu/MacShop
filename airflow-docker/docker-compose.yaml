@@ -6,7 +6,12 @@
 # 20250906_002 - PoChun Hsu - [Drop]    Jupyter Notebook which is not needed.
 # 20250906_003 - PoChun Hsu - [Alter]   Airflow version to 2.11.0. The latest version of 2.x
 # 20250906_004 - PoChun Hsu - [Add]     Airflow install into Dockerfile.airflow
-# 20250906_003 - PoChun Hsu - [Add]     Sparkinstall into Dockerfile.spark
+# 20250906_003 - PoChun Hsu - [Add]     Spark install into Dockerfile.spark
+# 20250906_004 - PoChun Hsu - [Drop]    requirements. Add to Dockerfile.
+# 20250906_005 - PoChun Hsu - [Drop]    jar-downloader. Add to Dockerfile.
+# 20250908_001 - PoChun Hsu - [Add]     Spark volume: event
+# 20250908_002 - PoChun Hsu - [Add]     Spark-History
+# 20250920_001 - PoChun Hsu - [Drop]    platform setting of Metabase. Make sure it works in M1 Mac.
 
 # version: '3.8' # 20250906_001
 
@@ -62,13 +67,6 @@ services:
 
   # 20250906_005 >>
   # 20250729_002 >>
-  # jar-downloader:
-  #   image: curlimages/curl
-  #   command: >
-  #     sh -c "mkdir -p /downloads &&
-  #            curl -L -o /downloads/postgresql-42.7.3.jar https://jdbc.postgresql.org/download/postgresql-42.7.3.jar"
-  #   volumes:
-  #     - ./spark_jars:/downloads
   # 20250729_002 <<
   # 20250906_005 <<
 
@@ -93,8 +91,16 @@ services:
       - "4040:4040"
     volumes:
       - ./spark_app:/opt/spark-apps
-      # - ./spark_jars:/opt/spark/jars # 20250906_005
-
+      - ./output_parquet:/opt/spark-output         # 20250901_001 ✅ 新增：共享輸出
+      - ./spark_jars:/opt/spark/jars               # 20250901_001 可選：確保 jar 一致
+      - ./spark-events:/tmp/spark-events           # 20250908_001
+      - ./spark_conf:/opt/bitnami/spark/conf       # 20250910_001
+    # 20250910_002 >>
+    deploy:
+      resources:
+        limits:
+          memory: 3G   # 給 master 足夠的頭部空間
+    # 20250910_002 <<
 
   spark-worker:
     # 20250906_005 >>
@@ -105,12 +111,34 @@ services:
     # 20250906_005 <<
     command: /opt/bitnami/spark/sbin/start-worker.sh spark://spark:7077
     environment:
-      - SPARK_MODE=worker   # ✅ Worker 模式
-    # volumes:
-    #   - ./spark_jars:/opt/spark/jars # 20250906_005
+      - SPARK_MODE=worker        # ✅ Worker 模式
+      - SPARK_WORKER_MEMORY=4G   # 20250910_002 bitnami 變數，限制 executor 總額
+    volumes:
+      - ./output_parquet:/opt/spark-output         # 20250901_001 ✅ 新增：共享輸出（必要）
+      - ./spark_jars:/opt/spark/jars               # 20250901_001 可選
+      - ./spark_conf:/opt/bitnami/spark/conf       # 20250910_001
+    # 20250906_005
     depends_on:
       - spark
+    # 20250910_002 >>
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    # 20250910_002 <<
   # 20250728_001 <<
+  
+  # 20250908_002 >>
+  spark-history:
+    image: bitnami/spark:3.5
+    command: ["spark-history-server"]
+    environment:
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
+    ports:
+      - "18080:18080"
+    volumes:
+      - ./spark-events:/tmp/spark-events:ro
+  # 20250908_002 <<
 
   # 20250906_002 >>
   # 20250729_001 >>
@@ -147,7 +175,7 @@ services:
 
   metabase:
     image: metabase/metabase:latest
-    platform: linux/amd64 
+    # platform: linux/amd64 20250920_001
     ports:
       - "3000:3000"
     environment:
