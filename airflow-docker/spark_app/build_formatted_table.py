@@ -22,6 +22,7 @@ PG → Spark → Transform → _temp → swap（整合版）
 - 自測：
   python pg_pipeline_merged_v2.py --selftest
 """
+# 20250923_001 - PoChun Hsu - [Add]     More columns for product detail.
 
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ import sys
 import traceback
 from dataclasses import dataclass
 from typing import Optional, Tuple
-from pyspark.sql import types as T
+from pyspark.sql import types as T # 20250923_001
 
 # ------------------------------
 # Spark imports（動態載入以支援 --selftest）
@@ -331,6 +332,7 @@ def normalize_and_focus(df: DataFrame) -> DataFrame:
     )
     return df1
 
+# 20250923_001 >>
 # ------------------------------
 # 產品分類細節: 
 # ------------------------------
@@ -487,7 +489,7 @@ def attach_model_fields(df: DataFrame) -> DataFrame:
       .withColumn("model_name_norm", F.regexp_replace(model_name_norm, r"\s+", " ").alias("model_name_norm"))
       .withColumn("release_year", release_year)
     )
-
+# 20250923_001 <<
 
 # ------------------------------
 # 價格：建立 price_focus（[售價] 區塊 + 相鄰兩行 + search_text）
@@ -698,7 +700,7 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
     df = normalize_and_focus(df_src)
     df = attach_price_focus(df)
 
-    df = extract_product_fields(df) # 價格流程
+    df = extract_product_fields(df)
 
     df = extract_primary_price_candidates(df)
     df = apply_extra_price_heuristics(df)
@@ -706,7 +708,7 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
     df = df.withColumn("price_twd", F.col("final_price_twd"))
 
     df = derive_misc(df)
-    df = attach_model_fields(df)   # 20250923_001
+    df = attach_model_fields(df)   # 價格流程20250923_001
     df = classify_trade_intent(df)
 
     # 清理中間欄位
@@ -734,7 +736,7 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
         "product_category","size_inch","ram_gb","price_twd",
         "battery_health_pct","battery_cycles","model_number","model_identifier","sold_flag","trade_intent",
         "color","storage_gb","battery_health_bucket","design_cycle_target","health_status_hint","final_rule"
-        # 新增：
+        # 新增產品細節相關欄位： # 20250923_001
         "model_text_raw","model_name_norm","product_family","model_series","model_generation",
         "chipset_family","chipset_gen","chipset_tier","display_size_inch","release_year"
     ]
