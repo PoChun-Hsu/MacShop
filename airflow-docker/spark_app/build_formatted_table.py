@@ -29,6 +29,7 @@ import sys
 import traceback
 from dataclasses import dataclass
 from typing import Optional, Tuple
+from pyspark.sql import types as T
 
 # ------------------------------
 # Spark imports（動態載入以支援 --selftest）
@@ -331,6 +332,164 @@ def normalize_and_focus(df: DataFrame) -> DataFrame:
     return df1
 
 # ------------------------------
+# 產品分類細節: 
+# ------------------------------
+# --- 規則常數（可獨立成 config）---
+IPHONE_TIER_SYNONYMS = {
+    "pm": "Pro Max", "promax": "Pro Max",
+    "pmax": "Pro Max", "pro max": "Pro Max",
+    "pro": "Pro",
+    "plus": "Plus",
+    "air": "Air",  # iPhone Air（2025）
+}
+MAC_SERIES_SYNONYMS = {"mba": "Air", "mbp": "Pro"}
+INCH_SYNONYMS = {
+    "13吋": "13", "14吋": "14", "15吋": "15", "16吋": "16",
+    "11吋": "11", "13吋台": "13"  # 可再補
+}
+
+def _norm_synonyms(s: str) -> str:
+    if not s: return s
+    t = s.lower().strip()
+    # 常見簡寫統一
+    t = t.replace("iphone", "iPhone").replace("ipad", "iPad").replace("macbook", "MacBook")
+    return t
+
+@F.udf(T.StringType())
+def norm_text_udf(s):
+    return _norm_synonyms(s)
+
+def attach_model_fields(df: DataFrame) -> DataFrame:
+    # 來源：先用你已有的 focus_text / primary_product_info
+    base = (F.coalesce(F.col("primary_product_info"), F.col("focus_text"), F.col("search_text")))
+    txt  = F.regexp_replace(F.lower(base), r"[、，,_/|\-]+", " ")
+    txt  = F.regexp_replace(txt, r"\s+", " ")
+
+    # === iPhone ===
+    # 先判別是否 iPhone 系列
+    is_iphone = F.lower(F.col("product_category")).like("%iphone%") | txt.like("%iphone%")
+
+    # 順序要能先吃 Pro Max
+    iph_pro_max = F.regexp_extract(txt, r"iphone\s*([1-9]\d?)\s*(?:pro\s*max|pm|promax|pmax)", 1)
+    iph_pro     = F.regexp_extract(txt, r"iphone\s*([1-9]\d?)\s*pro(?!\s*max)", 1)
+    iph_plus    = F.regexp_extract(txt, r"iphone\s*([1-9]\d?)\s*plus", 1)
+    iph_air     = F.regexp_extract(txt, r"iphone\s*([1-9]\d?)\s*air", 1)
+    iph_base    = F.regexp_extract(txt, r"iphone\s*([1-9]\d?)\b", 1)
+    # 也支援縮寫 17PM / 17Pro / 17+
+    iph_pm2     = F.regexp_extract(txt, r"\b([1-9]\d?)\s*(?:pm|promax|pmax)\b", 1)
+    iph_p2      = F.regexp_extract(txt, r"\b([1-9]\d?)\s*p(ro)?\b", 1)
+    iph_plus2   = F.regexp_extract(txt, r"\b([1-9]\d?)\s*\+\b", 1)  # 17+
+    iph_air2    = F.regexp_extract(txt, r"\b([1-9]\d?)\s*air\b", 1)
+
+    iph_gen = (
+        F.when(iph_pro_max != "", iph_pro_max.cast("int"))
+         .when(iph_pro != "", iph_pro.cast("int"))
+         .when(iph_plus != "", iph_plus.cast("int"))
+         .when(iph_air != "", iph_air.cast("int"))
+         .when(iph_pm2 != "", iph_pm2.cast("int"))
+         .when(iph_p2 != "", iph_p2.cast("int"))
+         .when(iph_plus2 != "", iph_plus2.cast("int"))
+         .when(iph_air2 != "", iph_air2.cast("int"))
+         .when(iph_base != "", iph_base.cast("int"))
+    )
+
+    iph_tier = (
+        F.when(iph_pro_max != "", F.lit("Pro Max"))
+         .when(txt.rlike(r"iphone\s*[1-9]\d?\s*pro(?!\s*max)") | txt.rlike(r"\b[1-9]\d?\s*p(ro)?\b"), F.lit("Pro"))
+         .when(txt.rlike(r"iphone\s*[1-9]\d?\s*plus") | txt.rlike(r"\b[1-9]\d?\s*\+\b"), F.lit("Plus"))
+         .when(txt.rlike(r"iphone\s*[1-9]\d?\s*air") | txt.rlike(r"\b[1-9]\d?\s*air\b"), F.lit("Air"))
+    )
+
+    # === iPad ===
+    is_ipad  = F.lower(F.col("product_category")).like("%ipad%") | txt.like("%ipad%")
+    ipad_series = F.when(txt.like("%ipad pro%"), "Pro") \
+                   .when(txt.like("%ipad air%"), "Air") \
+                   .when(txt.like("%ipad mini%"), "mini") \
+                   .when(txt.like("%ipad%"), "iPad")
+
+    ipad_inch = F.regexp_extract(txt, r'(\d{1,2}(?:\.\d)?)\s*(?:\"|吋|inch|in)', 1)
+    ipad_gen  = F.regexp_extract(txt, r'(?:第|gen\s*)(\d{1,2})(?:代|th)?', 1)  # iPad(第10代)等
+
+    # A/M 晶片
+    chip_m = F.regexp_extract(txt, r"\bm\s*([1-9])\s*(pro|max|ultra)?\b", 1)
+    chip_m_tier = F.regexp_extract(txt, r"\bm\s*[1-9]\s*(pro|max|ultra)\b", 1)
+    chip_a = F.regexp_extract(txt, r"\ba\s*([1-9]\d)\b", 1)
+
+    # === MacBook ===
+    is_macbook = F.lower(F.col("product_category")).like("%macbook%") | txt.like("%macbook%") | txt.like("%mbp%") | txt.like("%mba%")
+    mac_series = (
+        F.when(txt.like("%macbook air%") | txt.like("% mba %"), "Air")
+         .when(txt.like("%macbook pro%") | txt.like("% mbp %"), "Pro")
+    )
+    mac_inch = F.regexp_extract(txt, r'(\d{2}(?:\.\d)?)\s*(?:\"|吋|inch|in)', 1)
+
+    # 組合輸出欄位
+    product_family = (
+        F.when(is_iphone, F.lit("iPhone"))
+         .when(is_ipad,  F.lit("iPad"))
+         .when(is_macbook, F.lit("MacBook"))
+    )
+
+    chipset_family = (
+        F.when(chip_m != "", F.lit("M"))
+         .when(chip_a != "", F.lit("A"))
+    )
+    chipset_gen = (
+        F.when(chip_m != "", chip_m.cast("int"))
+         .when(chip_a != "", chip_a.cast("int"))
+    )
+    chipset_tier = F.when(chip_m_tier != "", F.initcap(chip_m_tier))
+
+    display_size_inch = (
+        F.when(is_ipad & (ipad_inch != ""), ipad_inch.cast("double"))
+         .when(is_macbook & (mac_inch != ""), mac_inch.cast("double"))
+         .otherwise(F.col("size_inch"))  # 你原本就有 size_inch，盡量沿用
+    )
+
+    # generation / series
+    model_generation = (
+        F.when(is_iphone, iph_gen)
+         .when(is_ipad & (ipad_gen != ""), ipad_gen.cast("int"))
+    )
+    model_series = (
+        F.when(is_iphone, iph_tier)
+         .when(is_ipad, ipad_series)
+         .when(is_macbook, mac_series)
+    )
+
+    model_name_norm = (
+        F.when(is_iphone & (iph_gen.isNotNull()),
+               F.concat_ws(" ", F.lit("iPhone"), iph_gen.cast("string"), F.coalesce(iph_tier, F.lit(""))))
+         .when(is_ipad,
+               F.concat_ws(" ", F.lit("iPad"), F.coalesce(ipad_series, F.lit("")), 
+                           F.when(ipad_inch != "", F.concat(F.lit("("), ipad_inch, F.lit("\""), F.lit(")")))))
+         .when(is_macbook,
+               F.concat_ws(" ", F.lit("MacBook"), F.coalesce(mac_series, F.lit("")),
+                           F.when(chip_m != "", F.concat(F.lit("(M"), chip_m, 
+                                   F.when(chip_m_tier != "", F.concat(F.lit(" "), F.initcap(chip_m_tier))).otherwise(F.lit("")),
+                                   F.lit(")")))))
+    )
+
+    release_year = (
+        F.when(is_iphone & (iph_gen == 17), F.lit(2025))  # 已發布資訊
+         .when(is_macbook & (chip_m == "4"), F.lit(2025)) # MacBook Air (M4) 2025
+    )
+
+    return (df
+      .withColumn("model_text_raw", base)
+      .withColumn("product_family", product_family)
+      .withColumn("model_series", model_series)
+      .withColumn("model_generation", model_generation)
+      .withColumn("chipset_family", chipset_family)
+      .withColumn("chipset_gen", chipset_gen)
+      .withColumn("chipset_tier", chipset_tier)
+      .withColumn("display_size_inch", display_size_inch)
+      .withColumn("model_name_norm", F.regexp_replace(model_name_norm, r"\s+", " ").alias("model_name_norm"))
+      .withColumn("release_year", release_year)
+    )
+
+
+# ------------------------------
 # 價格：建立 price_focus（[售價] 區塊 + 相鄰兩行 + search_text）
 # ------------------------------
 def attach_price_focus(df: DataFrame) -> DataFrame:
@@ -539,7 +698,7 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
     df = normalize_and_focus(df_src)
     df = attach_price_focus(df)
 
-    df = extract_product_fields(df)
+    df = extract_product_fields(df) # 價格流程
 
     df = extract_primary_price_candidates(df)
     df = apply_extra_price_heuristics(df)
@@ -547,6 +706,7 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
     df = df.withColumn("price_twd", F.col("final_price_twd"))
 
     df = derive_misc(df)
+    df = attach_model_fields(df)   # 20250923_001
     df = classify_trade_intent(df)
 
     # 清理中間欄位
@@ -574,6 +734,9 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
         "product_category","size_inch","ram_gb","price_twd",
         "battery_health_pct","battery_cycles","model_number","model_identifier","sold_flag","trade_intent",
         "color","storage_gb","battery_health_bucket","design_cycle_target","health_status_hint","final_rule"
+        # 新增：
+        "model_text_raw","model_name_norm","product_family","model_series","model_generation",
+        "chipset_family","chipset_gen","chipset_tier","display_size_inch","release_year"
     ]
     return df_out.select(*[c for c in write_cols if c in df_out.columns])
 
@@ -610,6 +773,16 @@ def recreate_temp_from_df_schema(spark, df_out, cfg: DBConfig):
       battery_health_bucket TEXT,
       design_cycle_target INTEGER,
       health_status_hint TEXT,
+      model_text_raw TEXT,
+      model_name_norm TEXT,
+      product_family TEXT,
+      model_series TEXT,
+      model_generation INTEGER,
+      chipset_family TEXT,
+      chipset_gen INTEGER,
+      chipset_tier TEXT,
+      display_size_inch DOUBLE PRECISION,
+      release_year INTEGER,
       final_rule TEXT
     );
     '''
