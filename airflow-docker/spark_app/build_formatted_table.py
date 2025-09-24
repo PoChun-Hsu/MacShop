@@ -708,7 +708,7 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
     df = df.withColumn("price_twd", F.col("final_price_twd"))
 
     df = derive_misc(df)
-    df = attach_model_fields(df)   # 價格流程20250923_001
+    df = attach_model_fields(df)   # 價格流程 # 20250923_001
     df = classify_trade_intent(df)
 
     # 清理中間欄位
