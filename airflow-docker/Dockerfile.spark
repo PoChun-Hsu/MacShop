@@ -6,12 +6,26 @@ USER 0
 
 # 建議在 build 時就把 JDBC 驅動放進去，避免額外 sidecar
 # 建立 jars 目錄並直接用 ADD 抓取 JDBC driver
-RUN mkdir -p /opt/bitnami/spark/jars
-ADD https://jdbc.postgresql.org/download/postgresql-42.7.3.jar /opt/bitnami/spark/jars/
+# RUN mkdir -p /opt/bitnami/spark/jars
+# ADD https://jdbc.postgresql.org/download/postgresql-42.7.3.jar /opt/bitnami/spark/jars/
 
 # 放你的 Spark/PySpark apps（保留 volume 也行；兩者擇一或並存）
 # 如果你想要 build 固定版本的 app：
 # COPY spark_app/ /opt/spark-apps/
+
+# 20250925_001 >>
+# === 使用本機已下載好的 Spark 壓縮檔 ===
+# 注意：docker-compose build 時 context 是 ./spark
+# 但檔案放在 airflow/vendor，所以要 COPY ../airflow/vendor/...
+COPY airflow/vendor/spark-3.5.0-bin-hadoop3.tgz /tmp/spark.tgz
+
+RUN mkdir -p /opt/spark && \
+    tar -xzf /tmp/spark.tgz -C /opt/spark --strip-components=1 && \
+    rm /tmp/spark.tgz
+
+# === 複製已下載好的 PostgreSQL JDBC driver ===
+COPY spark/jars/postgresql-42.7.3.jar /opt/spark/jars/
+# 20250925_001 <<
 
 # 建立預設 apps 目錄，供你用 volume 掛載
 RUN mkdir -p /opt/spark-apps
