@@ -19,8 +19,8 @@ x-airflow-common:
   &airflow-common
   image: local/airflow:2.11.0-pc1 # 20250906_003 #20250906_004
   build:
-    context: .
-    dockerfile: Dockerfile.airflow
+    context: .                       # 20250925_001
+    dockerfile: ./airflow/Dockerfile # 20250925_001
   environment:
     &airflow-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -76,8 +76,8 @@ services:
     # 20250906_005 >>
     image: local/spark:3.5.0
     build:
-      context: .
-      dockerfile: Dockerfile.spark
+      context: .                     # 20250925_001
+      dockerfile: ./spark/Dockerfile # 20250925_001
     # 20250906_005 <<
     command: /opt/bitnami/spark/sbin/start-master.sh
     environment:
@@ -106,8 +106,8 @@ services:
     # 20250906_005 >>
     image: local/spark:3.5.0
     build:
-      context: .
-      dockerfile: Dockerfile.spark
+      context: .                     # 20250925_001
+      dockerfile: ./spark/Dockerfile # 20250925_001
     # 20250906_005 <<
     command: /opt/bitnami/spark/sbin/start-worker.sh spark://spark:7077
     environment:
