@@ -1,3 +1,5 @@
+# 20250906_003 - PoChun Hsu - [Alter]   Improved build efficiency by reusing pre-downloaded spark.tgz.
+
 FROM apache/airflow:2.11.0
 
 USER airflow
