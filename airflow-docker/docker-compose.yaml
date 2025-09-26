@@ -12,6 +12,7 @@
 # 20250908_001 - PoChun Hsu - [Add]     Spark volume: event
 # 20250908_002 - PoChun Hsu - [Add]     Spark-History
 # 20250920_001 - PoChun Hsu - [Drop]    platform setting of Metabase. Make sure it works in M1 Mac.
+# 20250906_003 - PoChun Hsu - [Alter]   Improved build efficiency by reusing pre-downloaded spark.tgz.
 
 # version: '3.8' # 20250906_001
 
