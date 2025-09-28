@@ -155,10 +155,22 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    user: "0:0"   # 建議用 root 免去 macOS 上 docker.sock 權限問題
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - /var/run/docker.sock:/var/run/docker.sock
 
   airflow-worker:
     <<: *airflow-common
     command: celery worker
+    user: "0:0"   # 建議用 root 免去 macOS 上 docker.sock 權限問題
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - /var/run/docker.sock:/var/run/docker.sock
 
   airflow-init:
     <<: *airflow-common
