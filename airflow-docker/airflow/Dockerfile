@@ -1,4 +1,5 @@
-# 20250906_003 - PoChun Hsu - [Alter]   Improved build efficiency by reusing pre-downloaded spark.tgz.
+# 20250926_001 - PoChun Hsu - [Alter]   Improved build efficiency by reusing pre-downloaded spark.tgz.
+# 20250928_001 - PoChun Hsu - [Add]     Enabled Airflow to trigger jobs via Docker socket, delegating actual execution to Spark.
 
 FROM apache/airflow:2.11.0
 
@@ -24,6 +25,8 @@ RUN pip install --no-cache-dir -r /requirements.txt --constraint "${CONSTRAINT_U
 COPY spark/jars/postgresql-42.7.3.jar /opt/spark/jars/ 
 # 20250906_003 <<
 
+# 20250928_001 >>
 USER root
 RUN apt-get update && apt-get install -y docker.io
 USER airflow
+# 20250928_001 <<
