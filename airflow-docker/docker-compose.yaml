@@ -12,7 +12,8 @@
 # 20250908_001 - PoChun Hsu - [Add]     Spark volume: event
 # 20250908_002 - PoChun Hsu - [Add]     Spark-History
 # 20250920_001 - PoChun Hsu - [Drop]    platform setting of Metabase. Make sure it works in M1 Mac.
-# 20250906_003 - PoChun Hsu - [Alter]   Improved build efficiency by reusing pre-downloaded spark.tgz.
+# 20250926_001 - PoChun Hsu - [Alter]   Improved build efficiency by reusing pre-downloaded spark.tgz.
+# 20250928_001 - PoChun Hsu - [Add]     Enabled Airflow to trigger jobs via Docker socket, delegating actual execution to Spark.
 
 # version: '3.8' # 20250906_001
 
@@ -155,22 +156,26 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    # 20250928_001 >>
     user: "0:0"   # 建議用 root 免去 macOS 上 docker.sock 權限問題
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
       - /var/run/docker.sock:/var/run/docker.sock
+    # 20250928_001 <<
 
   airflow-worker:
     <<: *airflow-common
     command: celery worker
+    # 20250928_001 >>
     user: "0:0"   # 建議用 root 免去 macOS 上 docker.sock 權限問題
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
       - /var/run/docker.sock:/var/run/docker.sock
+    # 20250928_001 <<
 
   airflow-init:
     <<: *airflow-common
