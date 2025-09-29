@@ -12,11 +12,14 @@ import random
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
-import redis 
+import redis
 import hashlib
 # 新增 import 與 Dataset 定義
+
+# 20250928_002 >>
 from airflow import Dataset
 RAW_UPDATED = Dataset("dataset://ptt_macshop/raw_updated")  # 自訂你的 dataset URI
+# 20250928_002 <<
 
 PTT_BOARD = "MacShop"
 DEFAULT_START_DATE = datetime(2025, 5, 1)
