@@ -305,12 +305,14 @@ with DAG(
         task_id="swap_page_date_table",
         python_callable=swap_page_date_table
     )
-
+    
+    # 20250928_002 >>
     from airflow.operators.empty import EmptyOperator
 
     publish = EmptyOperator(
         task_id="publish_raw_updated",
         outlets=[RAW_UPDATED],
     )
-
+    # 20250928_002 <<
+    
     prepare_temp >> extract >> update >> swap >> publish
