@@ -1,4 +1,6 @@
 # 20250724_001 - PoChun Hsu - [Create]  DAG to update the data in recent 90 days.
+# 20250831_001 - PoChun Hsu - [Add]     exception hinting for nonexist table.
+# 20250928_002 - PoChun Hsu - [Add]     Dataset for trigger across DAGs.
 
 # DAG: Incremental Sync for PTT MacShop
 
@@ -12,6 +14,12 @@ import aiohttp
 from bs4 import BeautifulSoup
 import redis
 import hashlib
+# 新增 import 與 Dataset 定義
+
+# 20250928_002 >>
+from airflow import Dataset
+RAW_UPDATED = Dataset("dataset://ptt_macshop/raw_updated")  # 自訂你的 dataset URI
+# 20250928_002 <<
 
 PTT_BOARD = "MacShop"
 DEFAULT_START_DATE = datetime(2025, 5, 1)
@@ -66,7 +74,12 @@ def parse_full_datetime(date_str):
 # 判斷重要頁碼
 def determine_incremental_range():
     pg = PostgresHook(postgres_conn_id='postgres_default')
-    records = pg.get_records("SELECT page_num, max_date FROM Ptt_Macshop_Page_Dates WHERE Max_Date IS NOT NULL ORDER BY Page_Num ASC")
+    records = pg.get_records("""
+                            SELECT Page_Num, Max_Date
+                            FROM Ptt_Macshop_Page_Dates 
+                            WHERE Max_Date IS NOT NULL 
+                            ORDER BY Page_Num ASC
+                            """)
     ninety_days_ago = datetime.now() - timedelta(days=90)
 
     start_page = None
@@ -98,17 +111,29 @@ def prepare_temp_table():
     """
     pg = PostgresHook(postgres_conn_id="postgres_default")
 
-    pg.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Temp;", autocommit=True)
-    pg.run("""
-        CREATE TABLE Ptt_Macshop_Page_Dates_Temp
-        (LIKE Ptt_Macshop_Page_Dates INCLUDING ALL);
-    """, autocommit=True)
-    pg.run("""
-        INSERT INTO Ptt_Macshop_Page_Dates_Temp
-        SELECT * FROM Ptt_Macshop_Page_Dates;
-    """, autocommit=True)
+    try:
+        pg.run('DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Temp;', autocommit=True)
+        pg.run("""
+            CREATE TABLE Ptt_Macshop_Page_Dates_Temp
+            (LIKE Ptt_Macshop_Page_Dates INCLUDING ALL);
+        """, autocommit=True)
+        pg.run("""
+            INSERT INTO Ptt_Macshop_Page_Dates_Temp
+            SELECT * 
+            FROM Ptt_Macshop_Page_Dates;
+        """, autocommit=True)
 
-    print("✅ Temp table prepared and seeded with existing data")
+        print("✅ Temp table prepared and seeded with existing data")
+    # 20250831_001 >>
+    except Exception as e:
+        if "UndefinedTable" in str(e):
+            raise RuntimeError(
+                "❌ 找不到基礎表 `ptt_macshop_page_dates`，"
+                "代表還沒有 Full run 過。請先執行 Full run 以建立基礎資料表。"
+            ) from e
+        else:
+            raise
+    # 20250831_001 <<
 
 # async 碼: reuse fetch_ptt_page_async from full DAG, but use formal table
 async def fetch_and_check_diff(session, page_num):
@@ -245,11 +270,11 @@ def update_articles(**context):
 
 def swap_page_date_table():
     pg = PostgresHook(postgres_conn_id='postgres_default')
-    pg.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
-    pg.run("ALTER TABLE Ptt_Macshop_Page_Dates RENAME TO Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
-    pg.run("ALTER TABLE Ptt_Macshop_Page_Dates_Temp RENAME TO Ptt_Macshop_Page_Dates;", autocommit=True)
-    pg.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
-    pg.run("CREATE INDEX IF NOT EXISTS idx_description_Hash ON Ptt_Macshop_Articles(Description_Hash);", autocommit=True)
+    pg.run('DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;', autocommit=True)
+    pg.run('ALTER TABLE Ptt_Macshop_Page_Dates RENAME TO Ptt_Macshop_Page_Dates_Backup;', autocommit=True)
+    pg.run('ALTER TABLE Ptt_Macshop_Page_Dates_Temp RENAME TO Ptt_Macshop_Page_Dates;', autocommit=True)
+    pg.run('DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;', autocommit=True)
+    pg.run('CREATE INDEX IF NOT EXISTS idx_description_Hash ON Ptt_Macshop_Articles(Description_Hash);', autocommit=True)
 
 with DAG(
     "Ptt_Macshop_Incremental_Async",
@@ -280,5 +305,14 @@ with DAG(
         task_id="swap_page_date_table",
         python_callable=swap_page_date_table
     )
+    
+    # 20250928_002 >>
+    from airflow.operators.empty import EmptyOperator
 
-    prepare_temp >> extract >> update >> swap
+    publish = EmptyOperator(
+        task_id="publish_raw_updated",
+        outlets=[RAW_UPDATED],
+    )
+    # 20250928_002 <<
+    
+    prepare_temp >> extract >> update >> swap >> publish
