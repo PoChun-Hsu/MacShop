@@ -9,6 +9,8 @@
 #    - {"skip_debounce": true} 手動跳過等待
 #    - {"debounce_seconds": 0} 或其他秒數，覆寫等待時間
 
+# 20250928_002 - PoChun Hsu - [Add]     Refactor to be triggered by ptt_macshop_dag_incremental_async.
+
 import pendulum
 from datetime import timedelta
 
