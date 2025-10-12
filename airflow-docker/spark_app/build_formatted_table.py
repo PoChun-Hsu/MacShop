@@ -22,6 +22,8 @@ PG → Spark → Transform → _temp → swap（整合版）
 - 自測：
   python pg_pipeline_merged_v2.py --selftest
 """
+# 20250923_001 - PoChun Hsu - [Add]     Columns of product information details.
+# 20250923_001 - PoChun Hsu - [Add]     More rules to clarify the price.
 
 from __future__ import annotations
 
@@ -29,7 +31,7 @@ import sys
 import traceback
 from dataclasses import dataclass
 from typing import Optional, Tuple
-from pyspark.sql import types as T
+from pyspark.sql import types as T # 20250923_001
 
 # ------------------------------
 # Spark imports（動態載入以支援 --selftest）
@@ -194,8 +196,8 @@ MODEL_TO_SPEC_REGEX = r"(?s)\[型號\]\s*(.*?)\n\s*\[規格\]"
 PRICE_BLOCK_REGEX = r"(?s)\[售價\]\s*(.+?)(?=\n\s*\[[^\]\\n]{1,20}\]|$)"
 PRICE_LINE_AFTER  = r"(?i)^\s*\[售價\][^\\n]*\n([^\\n]{0,80})"
 PRICE_NEXT_AFTER  = r"(?i)\[售價\][^\\n]*\n+[^\\n]*\n([^\\n]{0,80})"
-#20251012 僅鎖定『售價』所在的單行（行首可選中括號，允許全/半形冒號與空白）
-PRICE_LINE_STRICT = r"(?mis)^\s*\[?\s*售\s*價\s*\]?\s*[:：]?\s*(.+)$"
+# 僅鎖定『售價』所在的單行（行首可選中括號，允許全/半形冒號與空白）
+PRICE_LINE_STRICT = r"(?mis)^\s*\[?\s*售\s*價\s*\]?\s*[:：]?\s*(.+)$" # 20251012_001
 
 # 價格候選與啟發式
 PRICE_REGEX_PFX       = r"(?:NT\$|NTD|\$|台幣|新台幣|TWD)\s*([0-9][0-9,]{2,})"
@@ -333,6 +335,7 @@ def normalize_and_focus(df: DataFrame) -> DataFrame:
     )
     return df1
 
+# 20250923_001 >>
 # ------------------------------
 # 產品分類細節: 
 # ------------------------------
@@ -489,7 +492,7 @@ def attach_model_fields(df: DataFrame) -> DataFrame:
       .withColumn("model_name_norm", F.regexp_replace(model_name_norm, r"\s+", " ").alias("model_name_norm"))
       .withColumn("release_year", release_year)
     )
-
+# 20250923_001 <<
 
 # ------------------------------
 # 價格：建立 price_focus（[售價] 區塊 + 相鄰兩行 + search_text）
@@ -693,8 +696,8 @@ def classify_trade_intent(df: DataFrame) -> DataFrame:
     return df.withColumn("trade_intent", trade_intent)
 
 
-#20251012 價格驗證與防呆：避免把作者帳號數字或非合理範圍當成售價
-#20251012 價格驗證與防呆：避免把作者帳號數字或非合理範圍當成售價
+# 20251012_001 >>
+# 價格驗證與防呆：避免把作者帳號數字或非合理範圍當成售價
 def validate_price_20251012(df: DataFrame, *, price_col: str = "price_twd", author_col: str = "author") -> DataFrame:
     author_digits = F.regexp_extract(F.coalesce(F.col(author_col), F.lit("")), r"(\d+)", 1)
     df = df.withColumn("author_digits__20251012", author_digits)
@@ -711,6 +714,7 @@ def validate_price_20251012(df: DataFrame, *, price_col: str = "price_twd", auth
         F.when((F.col(price_col) < F.lit(1)) | (F.col(price_col) > F.lit(1000000)), F.lit(None).cast("long")).otherwise(F.col(price_col))
     )
     return df
+# 20251012_001 <<
 
 # ------------------------------
 # 主轉換流程
@@ -758,7 +762,7 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
         "product_category","size_inch","ram_gb","price_twd",
         "battery_health_pct","battery_cycles","model_number","model_identifier","sold_flag","trade_intent",
         "color","storage_gb","battery_health_bucket","design_cycle_target","health_status_hint","final_rule"
-        # 新增：
+        # 新增產品細節相關欄位： # 20250923_001
         "model_text_raw","model_name_norm","product_family","model_series","model_generation",
         "chipset_family","chipset_gen","chipset_tier","display_size_inch","release_year"
     ]
