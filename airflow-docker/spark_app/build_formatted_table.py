@@ -22,7 +22,8 @@ PG → Spark → Transform → _temp → swap（整合版）
 - 自測：
   python pg_pipeline_merged_v2.py --selftest
 """
-# 20250923_001 - PoChun Hsu - [Add]     More columns for product detail.
+# 20250923_001 - PoChun Hsu - [Add]     Columns of product information details.
+# 20250923_001 - PoChun Hsu - [Add]     More rules to clarify the price.
 
 from __future__ import annotations
 
@@ -195,6 +196,8 @@ MODEL_TO_SPEC_REGEX = r"(?s)\[型號\]\s*(.*?)\n\s*\[規格\]"
 PRICE_BLOCK_REGEX = r"(?s)\[售價\]\s*(.+?)(?=\n\s*\[[^\]\\n]{1,20}\]|$)"
 PRICE_LINE_AFTER  = r"(?i)^\s*\[售價\][^\\n]*\n([^\\n]{0,80})"
 PRICE_NEXT_AFTER  = r"(?i)\[售價\][^\\n]*\n+[^\\n]*\n([^\\n]{0,80})"
+# 僅鎖定『售價』所在的單行（行首可選中括號，允許全/半形冒號與空白）
+PRICE_LINE_STRICT = r"(?mis)^\s*\[?\s*售\s*價\s*\]?\s*[:：]?\s*(.+)$" # 20251012_001
 
 # 價格候選與啟發式
 PRICE_REGEX_PFX       = r"(?:NT\$|NTD|\$|台幣|新台幣|TWD)\s*([0-9][0-9,]{2,})"
@@ -693,6 +696,26 @@ def classify_trade_intent(df: DataFrame) -> DataFrame:
     return df.withColumn("trade_intent", trade_intent)
 
 
+# 20251012_001 >>
+# 價格驗證與防呆：避免把作者帳號數字或非合理範圍當成售價
+def validate_price_20251012(df: DataFrame, *, price_col: str = "price_twd", author_col: str = "author") -> DataFrame:
+    author_digits = F.regexp_extract(F.coalesce(F.col(author_col), F.lit("")), r"(\d+)", 1)
+    df = df.withColumn("author_digits__20251012", author_digits)
+    df = df.withColumn(
+        price_col,
+        F.when(
+            (F.col("author_digits__20251012") != "") & (F.col(price_col).cast("string") == F.col("author_digits__20251012")),
+            F.lit(None).cast("long")
+        ).otherwise(F.col(price_col))
+    )
+    # 合理範圍（可依板別調整）：1 ~ 1,000,000
+    df = df.withColumn(
+        price_col,
+        F.when((F.col(price_col) < F.lit(1)) | (F.col(price_col) > F.lit(1000000)), F.lit(None).cast("long")).otherwise(F.col(price_col))
+    )
+    return df
+# 20251012_001 <<
+
 # ------------------------------
 # 主轉換流程
 # ------------------------------
@@ -700,15 +723,18 @@ def transform_articles(df_src: DataFrame, repartition_target: Optional[int] = No
     df = normalize_and_focus(df_src)
     df = attach_price_focus(df)
 
-    df = extract_product_fields(df)
+    df = extract_product_fields(df) # 價格流程
 
     df = extract_primary_price_candidates(df)
     df = apply_extra_price_heuristics(df)
     df = finalize_price(df)
     df = df.withColumn("price_twd", F.col("final_price_twd"))
 
+    
+    #20251012 套用價格防呆（作者數字與不合理範圍）
+    df = validate_price_20251012(df, price_col="price_twd", author_col="author")
     df = derive_misc(df)
-    df = attach_model_fields(df)   # 價格流程 # 20250923_001
+    df = attach_model_fields(df)   # 20250923_001
     df = classify_trade_intent(df)
 
     # 清理中間欄位
