@@ -180,16 +180,8 @@ services:
   airflow-init:
     <<: *airflow-common
     # 20250709_001
-    # 20250906_004
-    command: bash -c "airflow db migrate && airflow users create \
-      --username admin \
-      --firstname Admin \
-      --lastname User \
-      --role Admin \
-      --email admin@example.com \
-      --password admin&&
-      airflow connections add 'postgres_default' \
-        --conn-uri 'postgresql+psycopg2://airflow:airflow@postgres:5432/airflow'"
+    # 20250906_004ß
+    command: ["/opt/spark/spark-3.5.0-bin-hadoop3/sbin/start-history-server.sh"]
 
   metabase:
     image: metabase/metabase:latest
