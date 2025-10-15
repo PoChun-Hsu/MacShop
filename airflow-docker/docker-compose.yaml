@@ -132,7 +132,7 @@ services:
   
   # 20250908_002 >>
   spark-history:
-    image: bitnami/spark:3.5
+    image: local/spark:3.5.0
     command: ["spark-history-server"]
     environment:
       - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
@@ -183,17 +183,17 @@ services:
     # 20250906_004ß
     command: ["/opt/spark/spark-3.5.0-bin-hadoop3/sbin/start-history-server.sh"]
 
-  metabase:
-    image: metabase/metabase:latest
-    # platform: linux/amd64 20250920_001
-    ports:
-      - "3000:3000"
-    environment:
-      MB_DB_FILE: /metabase-data/metabase.db
-    volumes:
-      - metabase-data:/metabase-data
-    depends_on:
-      - postgres
+  # metabase:
+  #   image: metabase/metabase:latest
+  #   # platform: linux/amd64 20250920_001
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     MB_DB_FILE: /metabase-data/metabase.db
+  #   volumes:
+  #     - metabase-data:/metabase-data
+  #   depends_on:
+  #     - postgres
 
 volumes:
   postgres-db-volume:
