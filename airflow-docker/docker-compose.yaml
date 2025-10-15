@@ -20,9 +20,9 @@
 x-airflow-common:
   &airflow-common
   image: local/airflow:2.11.0-pc1 # 20250906_003 #20250906_004
-  build:
-    context: .                       # 20250925_001
-    dockerfile: ./airflow/Dockerfile # 20250925_001
+  # build:
+  #   context: .                       # 20250925_001
+  #   dockerfile: ./airflow/Dockerfile # 20250925_001
   environment:
     &airflow-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -54,6 +54,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   # 20250709_002 >>
   redis:
     image: redis:7
@@ -77,16 +82,18 @@ services:
     container_name: spark
     # 20250906_005 >>
     image: local/spark:3.5.0
-    build:
-      context: .                     # 20250925_001
-      dockerfile: ./spark/Dockerfile # 20250925_001
+    # build:
+    #   context: .                     # 20250925_001
+    #   dockerfile: ./spark/Dockerfile # 20250925_001
     # 20250906_005 <<
-    command: /opt/bitnami/spark/sbin/start-master.sh
+    command: ["/bin/bash","-lc","/opt/spark/sbin/start-master.sh"]
     environment:
       - SPARK_MODE=master   # 必須是 master
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
       - SPARK_RPC_ENCRYPTION_ENABLED=no
       - SPARK_LOCAL_DIRS=/tmp
+      - SPARK_HOME=/opt/spark
+      - SPARK_NO_DAEMONIZE=true
     ports:
       - "8088:8080"   # Spark Master UI
       - "7077:7077"
@@ -94,9 +101,10 @@ services:
     volumes:
       - ./spark_app:/opt/spark-apps
       - ./output_parquet:/opt/spark-output         # 20250901_001 ✅ 新增：共享輸出
-      - ./spark_jars:/opt/spark/jars               # 20250901_001 可選：確保 jar 一致
+      # - ./spark_jars:/opt/spark/jars               # 20250901_001 可選：確保 jar 一致
       - ./spark-events:/tmp/spark-events           # 20250908_001
-      - ./spark_conf:/opt/bitnami/spark/conf       # 20250910_001
+      - ./spark_conf:/opt/spark/conf       # 20250910_001
+      - ./spark_jars:/opt/spark/external-jars:ro
     # 20250910_002 >>
     deploy:
       resources:
@@ -107,18 +115,21 @@ services:
   spark-worker:
     # 20250906_005 >>
     image: local/spark:3.5.0
-    build:
-      context: .                     # 20250925_001
-      dockerfile: ./spark/Dockerfile # 20250925_001
+    # build:
+    #   context: .                     # 20250925_001
+    #   dockerfile: ./spark/Dockerfile # 20250925_001
     # 20250906_005 <<
-    command: /opt/bitnami/spark/sbin/start-worker.sh spark://spark:7077
+    command: ["/bin/bash","-lc","/opt/spark/sbin/start-worker.sh spark://spark:7077"]
     environment:
       - SPARK_MODE=worker        # ✅ Worker 模式
       - SPARK_WORKER_MEMORY=4G   # 20250910_002 bitnami 變數，限制 executor 總額
+      - SPARK_NO_DAEMONIZE=true
+      - SPARK_HOME=/opt/spark
     volumes:
       - ./output_parquet:/opt/spark-output         # 20250901_001 ✅ 新增：共享輸出（必要）
-      - ./spark_jars:/opt/spark/jars               # 20250901_001 可選
-      - ./spark_conf:/opt/bitnami/spark/conf       # 20250910_001
+      # - ./spark_jars:/opt/spark/jars               # 20250901_001 可選
+      - ./spark_conf:/opt/spark/conf      # 20250910_001
+      - ./spark_jars:/opt/spark/external-jars:ro
     # 20250906_005
     depends_on:
       - spark
@@ -133,9 +144,10 @@ services:
   # 20250908_002 >>
   spark-history:
     image: local/spark:3.5.0
-    command: ["spark-history-server"]
+    command: ["/bin/bash","-lc","/opt/spark/sbin/start-history-server.sh"]
     environment:
       - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
+      - SPARK_HOME=/opt/spark
     ports:
       - "18080:18080"
     volumes:
@@ -177,11 +189,37 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     # 20250928_001 <<
 
+  # 20251015_001 - PoChun Hsu - [Add]   Airflow builder service to avoid parallel export conflicts.
+  airflow-builder:
+    image: local/airflow:2.11.0-pc1     # 與執行用服務相同 tag
+    build:
+      context: .                        # 20250925_001
+      dockerfile: ./airflow/Dockerfile  # 20250925_001
+    profiles: ["builder"]               # 僅 build，用 profile 隔離
+  
+  # 20251015_002 - PoChun Hsu - [Add]   Spark builder service to avoid parallel export conflicts.
+  spark-builder:
+    image: local/spark:3.5.0            # 與執行用服務相同 tag
+    build:
+      context: .                        # 20250925_001
+      dockerfile: ./spark/Dockerfile    # 20250925_001
+    profiles: ["builder"]               # 僅 build，用 profile 隔離
+
   airflow-init:
     <<: *airflow-common
     # 20250709_001
-    # 20250906_004ß
-    command: ["/opt/spark/spark-3.5.0-bin-hadoop3/sbin/start-history-server.sh"]
+    # 20250906_004
+    entrypoint: ["/bin/bash","-lc"]
+    command: ["/opt/airflow/scripts/airflow-init.sh"]
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts:ro   # 放 init 腳本（唯讀）
+      - ./keys:/opt/airflow/keys:ro         # 若腳本要用到 GCP SA
+    depends_on:
+      postgres:
+        condition: service_started           # 建議再搭配 db 健康檢查（見下）
 
   # metabase:
   #   image: metabase/metabase:latest
