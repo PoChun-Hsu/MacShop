@@ -1,14 +1,14 @@
 # 20250926_001 - PoChun Hsu - [Alter]   Improved build efficiency by reusing pre-downloaded spark.tgz.
 # 20250928_001 - PoChun Hsu - [Add]     Enabled Airflow to trigger jobs via Docker socket, delegating actual execution to Spark.
 
-FROM apache/airflow:2.11.0
-
-USER airflow
-
-ARG AIRFLOW_VERSION=2.11.0
-# Airflow 2.11 預設 Python 3.12
+ARG AIRFLOW_VERSION=3.1.0
 ARG PYTHON_VERSION=3.12
-ARG CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
+FROM apache/airflow:${AIRFLOW_VERSION}-python${PYTHON_VERSION}
+
+# ★★★ 關鍵：FROM 之後要重新宣告，才可在後續指令使用 ★★★
+ARG AIRFLOW_VERSION
+ARG PYTHON_VERSION
+ENV CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
 # 20250906_003
 COPY --chown=airflow:root airflow/requirements.airflow.txt /requirements.txt
