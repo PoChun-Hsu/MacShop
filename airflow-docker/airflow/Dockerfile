@@ -1,6 +1,8 @@
 # 20250926_001 - PoChun Hsu - [Alter]   Improved build efficiency by reusing pre-downloaded spark.tgz.
 # 20250928_001 - PoChun Hsu - [Add]     Enabled Airflow to trigger jobs via Docker socket, delegating actual execution to Spark.
+# 20251016_001 - PoChun Hsu - [Alter]   Update to Airflow 3.1.0
 
+# 20251016_001
 ARG AIRFLOW_VERSION=3.1.0
 ARG PYTHON_VERSION=3.12
 FROM apache/airflow:${AIRFLOW_VERSION}-python${PYTHON_VERSION}
