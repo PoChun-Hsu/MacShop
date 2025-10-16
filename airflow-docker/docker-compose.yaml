@@ -166,6 +166,9 @@ services:
     ports:
       - "8080:8080"
     command: webserver
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   airflow-scheduler:
     <<: *airflow-common
@@ -179,6 +182,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     # 20250928_001 <<
       - ./keys:/opt/airflow/keys:ro     # 20251016_004 若腳本要用到 GCP SA
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   airflow-worker:
     <<: *airflow-common
@@ -192,7 +198,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     # 20250928_001 <<
       - ./keys:/opt/airflow/keys:ro     # 若腳本要用到 GCP SA
-
+    depends_on:
+      postgres:
+        condition: service_healthy
+        
   # 20251016_001 Airflow builder service to avoid parallel export conflicts.
   airflow-builder:
     image: local/airflow:2.11.0-pc1     # 與執行用服務相同 tag
@@ -225,6 +234,7 @@ services:
       - ./scripts:/opt/airflow/scripts:ro   # 放 init 腳本（唯讀）
       - ./keys:/opt/airflow/keys:ro         # 若腳本要用到 GCP SA
     environment:
+      <<: *airflow-env   # ★ 關鍵：合併共用環境，避免覆蓋
       GCP_KEY_PATH: /opt/airflow/keys/starry-center-405211-04dd3e1fa083.json
       GCP_PROJECT: starry-center-405211
       GCP_SCOPE: https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive
