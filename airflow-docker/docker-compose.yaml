@@ -19,7 +19,9 @@
 # 20251016_003 - PoChun Hsu - [Add]     airflow initial scripts and related settings.
 # 20251016_004 - PoChun Hsu - [Add]     GCP crednetial json to Services.
 # 20251016_005 - PoChun Hsu - [Alter]   Spark to use package in local rather than download. Decrease the time of building.
-# 20251016_006 - PoChun Hsu - [Alter]   Check health status of Postgres before Airflow
+# 20251016_006 - PoChun Hsu - [Add]     Check health status of Postgres before Airflow
+# 20251016_007 - PoChun Hsu - [Add]     Check health status of Postgres before Airflow for all service
+# 20251016_008 - PoChun Hsu - [Add]     All airflow service in the same environment (PostgreSQL)
 
 # version: '3.8' # 20250906_001
 
@@ -166,9 +168,11 @@ services:
     ports:
       - "8080:8080"
     command: webserver
+    # 20251016_007 >>
     depends_on:
       postgres:
         condition: service_healthy
+    # 20251016_007 <<
 
   airflow-scheduler:
     <<: *airflow-common
@@ -182,9 +186,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     # 20250928_001 <<
       - ./keys:/opt/airflow/keys:ro     # 20251016_004 若腳本要用到 GCP SA
+    # 20251016_007 >>
     depends_on:
       postgres:
         condition: service_healthy
+    # 20251016_007 <<
 
   airflow-worker:
     <<: *airflow-common
@@ -198,9 +204,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     # 20250928_001 <<
       - ./keys:/opt/airflow/keys:ro     # 若腳本要用到 GCP SA
+    # 20251016_007 >>
     depends_on:
       postgres:
         condition: service_healthy
+    # 20251016_007 <<
         
   # 20251016_001 Airflow builder service to avoid parallel export conflicts.
   airflow-builder:
@@ -234,7 +242,7 @@ services:
       - ./scripts:/opt/airflow/scripts:ro   # 放 init 腳本（唯讀）
       - ./keys:/opt/airflow/keys:ro         # 若腳本要用到 GCP SA
     environment:
-      <<: *airflow-env   # ★ 關鍵：合併共用環境，避免覆蓋
+      <<: *airflow-env   # 20251016_008
       GCP_KEY_PATH: /opt/airflow/keys/starry-center-405211-04dd3e1fa083.json
       GCP_PROJECT: starry-center-405211
       GCP_SCOPE: https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive
