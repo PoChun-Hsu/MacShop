@@ -1,0 +1,18 @@
+apache-airflow==3.1.0
+
+# 基礎常用套件
+aiohttp
+beautifulsoup4
+requests
+redis
+psycopg2-binary
+pandas-gbq
+google-cloud-bigquery
+fastavro
+
+# Airflow Providers（交由 constraints 控版本）
+apache-airflow-providers-google
+apache-airflow-providers-postgres
+apache-airflow-providers-celery
+apache-airflow-providers-standard
+apache-airflow-providers-fab
