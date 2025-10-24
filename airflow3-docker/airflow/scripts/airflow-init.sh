@@ -53,7 +53,7 @@ done
 log "PostgreSQL is ready."
 
 # ---------------------------------------
-# 3. 初始化 / 升級資料庫（使用 flock 避免 parallel migration）
+# 3. 初始化 / 升級資料庫
 # ---------------------------------------
 log "Migrating metadata DB..."
 (
@@ -109,7 +109,7 @@ echo "  PLUGINS: ${AIRFLOW__CORE__PLUGINS_FOLDER}"
 echo "  AIRFLOW_HOME: ${AIRFLOW_HOME}"
 
 # ---------------------------------------
-# 6. 等待 DAGs Volume 掛載（最多 20 秒）
+# 6. 等待 DAGs Volume 掛載
 # ---------------------------------------
 log "Waiting for DAGs volume to be fully mounted..."
 for i in {1..10}; do
@@ -122,7 +122,7 @@ for i in {1..10}; do
 done
 
 # ---------------------------------------
-# 7. 強制重新序列化 DAGs（防止 parallel reserialize）
+# 7. 強制重新序列化 DAGs
 # ---------------------------------------
 log "Reserializing DAGs to refresh cache..."
 (
@@ -135,7 +135,50 @@ log "Reserializing DAGs to refresh cache..."
 ) 202>/tmp/airflow-dags.lock
 
 # ---------------------------------------
-# 8. 額外健康檢查（plugins / version）
+# 8. 建立 Airflow Connections
+# ---------------------------------------
+log "Upserting Airflow connections..."
+
+# postgres_default
+log "→ Upsert connection: postgres_default"
+airflow connections delete postgres_default >/dev/null 2>&1 || true
+airflow connections add postgres_default \
+  --conn-type 'postgres' \
+  --conn-host 'postgres' \
+  --conn-port '5432' \
+  --conn-login 'airflow' \
+  --conn-password 'airflow' \
+  --conn-schema 'airflow'
+log "postgres_default connection ready."
+
+# google_cloud_default
+log "→ Upsert connection: google_cloud_default"
+GCP_KEY_PATH="${GCP_KEY_PATH:-/opt/airflow/keys/starry-center-405211-04dd3e1fa083.json}"
+GCP_PROJECT="${GCP_PROJECT:-starry-center-405211}"
+GCP_SCOPE="${GCP_SCOPE:-https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive}"
+
+if [ ! -f "$GCP_KEY_PATH" ]; then
+  error "GCP key not found at $GCP_KEY_PATH"
+  exit 1
+fi
+
+cat > /tmp/gcp_conn.json <<JSON
+{
+  "conn_type": "google_cloud_platform",
+  "extra": {
+    "extra__google_cloud_platform__key_path": "${GCP_KEY_PATH}",
+    "extra__google_cloud_platform__project": "${GCP_PROJECT}",
+    "extra__google_cloud_platform__scope": "${GCP_SCOPE}"
+  }
+}
+JSON
+
+airflow connections delete google_cloud_default >/dev/null 2>&1 || true
+airflow connections add google_cloud_default --conn-json "$(cat /tmp/gcp_conn.json)"
+log "google_cloud_default connection ready."
+
+# ---------------------------------------
+# 9. 額外健康檢查
 # ---------------------------------------
 log "Verifying Airflow environment..."
 airflow version || warn "Airflow version check failed."
@@ -145,9 +188,6 @@ else
   warn "Some plugins may not have loaded correctly."
 fi
 
-# ---------------------------------------
-# 9. 結尾
-# ---------------------------------------
 log "✅ airflow-init finished successfully."
 flock -u 200
 exit 0
