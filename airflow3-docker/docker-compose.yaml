@@ -50,9 +50,9 @@ x-airflow-common:
   # Comment the image line, place your Dockerfile in the directory where you placed the docker-compose.yaml
   # and uncomment the "build" line below, Then run `docker-compose build` to build the images.
   build:
-    context: ./airflow              # Dockerfile 所在資料夾
-    dockerfile: Dockerfile          # 預設即可，不寫也行
-  image: local/airflow:3.1.0-pc1    # 建立後的自訂映像名稱
+    context: .                        # 用根目錄而不是 Dockerfile 所在資料夾，才能看到整個專案
+    dockerfile: ./airflow/Dockerfile  
+  image: local/airflow:3.1.0-pc1     # 建立後的自訂映像名稱
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
