@@ -1,58 +1,18 @@
 # Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-#
+# or more contributor license agreements.
+# See the NOTICE file for details.
+# -----------------------------------------------------------------------------
+# 20251024_001 - PoChun Hsu
+# [Merged] Integrate Spark, RedisInsight, builder, and GCP key support from Airflow 2.11.0 into 3.1.0 structure.
+# -----------------------------------------------------------------------------
 
-# Basic Airflow cluster configuration for CeleryExecutor with Redis and PostgreSQL.
-#
-# WARNING: This configuration is for local development. Do not use it in a production deployment.
-#
-# This configuration supports basic configuration using environment variables or an .env file
-# The following variables are supported:
-#
-# AIRFLOW_IMAGE_NAME           - Docker image name used to run Airflow.
-#                                Default: apache/airflow:3.1.0
-# AIRFLOW_UID                  - User ID in Airflow containers
-#                                Default: 50000
-# AIRFLOW_PROJ_DIR             - Base path to which all the files will be volumed.
-#                                Default: .
-# Those configurations are useful mostly in case of standalone testing/running Airflow in test/try-out mode
-#
-# _AIRFLOW_WWW_USER_USERNAME   - Username for the administrator account (if requested).
-#                                Default: airflow
-# _AIRFLOW_WWW_USER_PASSWORD   - Password for the administrator account (if requested).
-#                                Default: airflow
-# _PIP_ADDITIONAL_REQUIREMENTS - Additional PIP requirements to add when starting all containers.
-#                                Use this option ONLY for quick checks. Installing requirements at container
-#                                startup is done EVERY TIME the service is started.
-#                                A better way is to build a custom image or extend the official image
-#                                as described in https://airflow.apache.org/docs/docker-stack/build.html.
-#                                Default: ''
-#
-# Feel free to modify this file to suit your needs.
 ---
 x-airflow-common:
   &airflow-common
-  # In order to add custom dependencies or upgrade provider distributions you can use your extended image.
-  # Comment the image line, place your Dockerfile in the directory where you placed the docker-compose.yaml
-  # and uncomment the "build" line below, Then run `docker-compose build` to build the images.
   build:
-    context: .                        # 用根目錄而不是 Dockerfile 所在資料夾，才能看到整個專案
+    context: .                        # 保留原設定
     dockerfile: ./airflow/Dockerfile  
-  image: local/airflow:3.1.0-pc1     # 建立後的自訂映像名稱
+  image: local/airflow:3.1.0-pc1
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -64,16 +24,15 @@ x-airflow-common:
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
-    # yamllint disable rule:line-length
-    # Use simple http server on scheduler for health checks
-    # See https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server
-    # yamllint enable rule:line-length
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    # WARNING: Use _PIP_ADDITIONAL_REQUIREMENTS option ONLY for a quick checks
-    # for other purpose (development, test and especially production usage) build/extend Airflow image.
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
-    # The following line can be used to set a custom config file, stored in the local config folder
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    # -------------------------------
+    # Added from Airflow 2.11.0
+    # -------------------------------
+    GCP_KEY_PATH: /opt/airflow/keys/starry-center-405211-04dd3e1fa083.json
+    GCP_PROJECT: starry-center-405211
+    GCP_SCOPE: https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
@@ -81,6 +40,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/scripts:/opt/airflow/scripts:ro
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/keys:/opt/airflow/keys:ro
+    - /var/run/docker.sock:/var/run/docker.sock   # ★ 新增：允許 DockerOperator/Spark trigger
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -90,10 +50,12 @@ x-airflow-common:
       condition: service_healthy
 
 services:
+  # -------------------------------------
+  # Core Services
+  # -------------------------------------
   postgres:
     image: postgres:16
-    ports:
-      - "5432:5432"
+    ports: ["5432:5432"]
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
@@ -108,11 +70,8 @@ services:
     restart: always
 
   redis:
-    # Redis is limited to 7.2-bookworm due to licencing change
-    # https://redis.io/blog/redis-adopts-dual-source-available-licensing/
     image: redis:7.2-bookworm
-    expose:
-      - 6379
+    expose: ["6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -121,11 +80,19 @@ services:
       start_period: 30s
     restart: always
 
+  redisinsight:
+    image: redis/redisinsight:latest
+    ports: ["5540:5540"]
+    depends_on:
+      - redis
+
+  # -------------------------------------
+  # Airflow Components
+  # -------------------------------------
   airflow-apiserver:
     <<: *airflow-common
     command: api-server
-    ports:
-      - "8080:8080"
+    ports: ["8080:8080"]
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
       interval: 30s
@@ -141,6 +108,7 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    user: "0:0"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
       interval: 30s
@@ -156,12 +124,6 @@ services:
   airflow-dag-processor:
     <<: *airflow-common
     command: dag-processor
-    healthcheck:
-      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -171,8 +133,8 @@ services:
   airflow-worker:
     <<: *airflow-common
     command: celery worker
+    user: "0:0"
     healthcheck:
-      # yamllint disable rule:line-length
       test:
         - "CMD-SHELL"
         - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
@@ -182,8 +144,6 @@ services:
       start_period: 30s
     environment:
       <<: *airflow-common-env
-      # Required to handle warm shutdown of the celery workers properly
-      # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
       DUMB_INIT_SETSID: "0"
     restart: always
     depends_on:
@@ -196,77 +156,108 @@ services:
   airflow-triggerer:
     <<: *airflow-common
     command: triggerer
-    healthcheck:
-      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
 
-  airflow-builder:
-    image: local/airflow:3.1.0-pc1     # 20251016_007 align builder with runtime tag (was 2.11.0)
-    build:
-      context: .                        # 20250925_001
-      dockerfile: ./airflow/Dockerfile  # 20250925_001
-    profiles: ["builder"]               # 僅 build，用 profile 隔離
+  # -------------------------------------
+  # Spark Stack (from 2.11.0)
+  # -------------------------------------
+  spark:
+    image: local/spark:3.5.0
+    container_name: spark
+    command: ["/bin/bash","-lc","/opt/spark/sbin/start-master.sh"]
+    environment:
+      - SPARK_MODE=master
+      - SPARK_HOME=/opt/spark
+      - SPARK_NO_DAEMONIZE=true
+    ports:
+      - "8088:8080"
+      - "7077:7077"
+      - "4040:4040"
     volumes:
-      - ./keys:/opt/airflow/keys:ro     # 若腳本要用到 GCP SA
-    #command: bash -c "echo 'Builder container ready'"
+      - ./spark_app:/opt/spark-apps
+      - ./output_parquet:/opt/spark-output
+      - ./spark-events:/tmp/spark-events
+      - ./spark_conf:/opt/spark/conf
+      - ./spark_jars:/opt/spark/external-jars:ro
+    deploy:
+      resources:
+        limits:
+          memory: 3G
 
+  spark-worker:
+    image: local/spark:3.5.0
+    command: ["/bin/bash","-lc","/opt/spark/sbin/start-worker.sh spark://spark:7077"]
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_HOME=/opt/spark
+      - SPARK_WORKER_MEMORY=4G
+      - SPARK_NO_DAEMONIZE=true
+    volumes:
+      - ./output_parquet:/opt/spark-output
+      - ./spark_conf:/opt/spark/conf
+      - ./spark_jars:/opt/spark/external-jars:ro
+    depends_on:
+      - spark
+
+  spark-history:
+    image: local/spark:3.5.0
+    command: ["/bin/bash","-lc","/opt/spark/sbin/start-history-server.sh"]
+    environment:
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
+      - SPARK_HOME=/opt/spark
+    ports:
+      - "18080:18080"
+    volumes:
+      - ./spark-events:/tmp/spark-events:ro
+
+  # -------------------------------------
+  # Builders (for reproducible builds)
+  # -------------------------------------
+  airflow-builder:
+    image: local/airflow:3.1.0-pc1
+    build:
+      context: .
+      dockerfile: ./airflow/Dockerfile
+    profiles: ["builder"]
+    volumes:
+      - ./keys:/opt/airflow/keys:ro
+
+  spark-builder:
+    image: local/spark:3.5.0
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    profiles: ["builder"]
+
+  # -------------------------------------
+  # Initialization
+  # -------------------------------------
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
-    # yamllint disable rule:line-length
     command: "/opt/airflow/scripts/airflow-init.sh"
-    # yamllint enable rule:line-length
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
       _AIRFLOW_WWW_USER_CREATE: 'true'
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
+      GCP_KEY_PATH: /opt/airflow/keys/starry-center-405211-04dd3e1fa083.json
     user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-0}"
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
 
-  airflow-cli:
-    <<: *airflow-common
-    profiles:
-      - debug
-    environment:
-      <<: *airflow-common-env
-      CONNECTION_CHECK_MAX_COUNT: "0"
-    # Workaround for entrypoint issue. See: https://github.com/apache/airflow/issues/16252
-    command:
-      - bash
-      - -c
-      - airflow
-    depends_on:
-      <<: *airflow-common-depends-on
-
-  # You can enable flower by adding "--profile flower" option e.g. docker-compose --profile flower up
-  # or by explicitly targeted on the command line e.g. docker-compose up flower.
-  # See: https://docs.docker.com/compose/profiles/
   flower:
     <<: *airflow-common
     command: celery flower
-    profiles:
-      - flower
-    ports:
-      - "5555:5555"
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+    profiles: ["flower"]
+    ports: ["5555:5555"]
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -275,3 +266,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  metabase-data:
