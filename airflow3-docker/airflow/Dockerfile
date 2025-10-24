@@ -24,7 +24,7 @@ RUN chmod +x /opt/airflow/scripts/airflow-init.sh
 
 # 複製 Airflow 設定檔
 # airflow.cfg 放在 ./airflow/config/airflow.cfg
-COPY ./airflow/config/airflow.cfg /opt/airflow/airflow.cfg
+# COPY ./airflow/config/airflow.cfg /opt/airflow/airflow.cfg
 
 # --------------------------------------------------------------------
 # 切回 airflow 使用者（預設非 root，安全性較高）
