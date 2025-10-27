@@ -14,7 +14,7 @@ USER root
 
 # 20251016_003 - 安裝必要系統套件 + Python + pip + curl
 RUN apt-get update && \
-    apt-get install -y python3 python3-pip curl bash && \
+    apt-get install -y python3 python3-pip curl bash procps && \
     rm -rf /var/lib/apt/lists/*
 
 # 20250926_001 - PoChun Hsu - [Alter]   Improved build efficiency by reusing pre-downloaded spark.tgz.
