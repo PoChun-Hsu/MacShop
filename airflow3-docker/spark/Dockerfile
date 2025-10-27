@@ -6,6 +6,7 @@
 # 20251016_003 - PoChun Hsu - [Add]     python
 # 20251016_004 - PoChun Hsu - [Alter]   spark-3.5.0-bin-hadoop3.tgz to Spark folder.
 # 20251016_005 - PoChun Hsu - [Add]     Make sure authority to execute spark scripts
+# 20251027_001 - PoChun Hsu - [Add]     new package: procps
 
 # 20251015_001  
 FROM openjdk:17-jdk-slim 
@@ -13,6 +14,7 @@ FROM openjdk:17-jdk-slim
 USER root
 
 # 20251016_003 - 安裝必要系統套件 + Python + pip + curl
+# 20251027_001 - 加入 procs套件避免 load-spark-env.sh 錯誤
 RUN apt-get update && \
     apt-get install -y python3 python3-pip curl bash procps && \
     rm -rf /var/lib/apt/lists/*
