@@ -178,7 +178,26 @@ airflow connections add google_cloud_default --conn-json "$(cat /tmp/gcp_conn.js
 log "google_cloud_default connection ready."
 
 # ---------------------------------------
-# 9. 額外健康檢查
+# 9. 建立 Airflow Pools
+# ---------------------------------------
+log "Upserting Airflow pools..."
+
+POOL_NAME="ptt_formatted_build_pool"
+POOL_SLOTS=1
+POOL_DESC="Pool for Spark formatted build job"
+
+EXISTING_POOL=$(airflow pools list | grep -w "${POOL_NAME}" || true)
+if [ -z "$EXISTING_POOL" ]; then
+  log "→ Creating pool: ${POOL_NAME}"
+  airflow pools set "${POOL_NAME}" "${POOL_SLOTS}" "${POOL_DESC}" >/dev/null 2>&1
+  log "Pool created (${POOL_NAME}, slots=${POOL_SLOTS})."
+else
+  log "Pool already exists (${POOL_NAME}), skipping creation."
+fi
+
+
+# ---------------------------------------
+# 10. 額外健康檢查
 # ---------------------------------------
 log "Verifying Airflow environment..."
 airflow version || warn "Airflow version check failed."
