@@ -1,6 +1,9 @@
 # 20250724_001 - PoChun Hsu - [Create]  DAG to update the data in recent 90 days.
 # 20250831_001 - PoChun Hsu - [Add]     exception hinting for nonexist table.
 # 20251024_001 - PoChun Hsu - [Migrate] Airflow 3.1 TaskFlow + async compatible version.
+# 20251102_001 - PoChun Hsu - [Add]     parameterization.
+# 20251102_002 - PoChun Hsu - [Add]     mutiple USER_AGENTS back.
+
 
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -18,15 +21,51 @@ from bs4 import BeautifulSoup
 # ===============================
 PTT_BOARD = "MacShop"
 DEFAULT_START_DATE = datetime(2025, 5, 1)
-CONCURRENT_SIZE = 100
-RAW_UPDATED = Dataset("dataset://ptt_macshop/raw_updated")
+CONCURRENT_SIZE    = 100
+RAW_UPDATED        = Dataset("dataset://ptt_macshop/raw_updated")
+UPDATE_RECENT_DAY   = 90
 
 redis_client = redis.Redis(host="redis", port=6379, decode_responses=False)
 
+# 定義多種設備，避免被判定成機器人，更像不同使用者
+# 20251102_002
 USER_AGENTS = [
+    # Chrome - Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+
+    # Chrome - Mac
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_0_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15",
+
+    # Edge - Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.2365.80",
+
+    # Firefox - Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+
+    # Firefox - Mac
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.13; rv:120.0) Gecko/20100101 Firefox/120.0",
+
+    # Safari - Mac
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
+
+    # iPhone
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+
+    # Android
+    "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+
+    # iPad
+    "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 ]
 
 
@@ -69,8 +108,8 @@ def determine_incremental_range():
         WHERE Max_Date IS NOT NULL 
         ORDER BY Page_Num ASC
     """)
-    ninety_days_ago = datetime.now() - timedelta(days=90)
-    start_page = next((p for p, d in records if d and d >= ninety_days_ago), None) or 1
+    update_recent_days_ago = datetime.now() - timedelta(days=UPDATE_RECENT_DAY) # 20251102_001
+    start_page = next((p for p, d in records if d and d >= update_recent_days_ago), None) or 1 # 20251102_001
 
     import requests
     url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index.html"
