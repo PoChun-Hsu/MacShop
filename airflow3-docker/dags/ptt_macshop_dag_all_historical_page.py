@@ -419,12 +419,12 @@ def load_articles_to_temp(**context):
     # """
 
     # 寫到真正的 temp 檔案
-    with tempfile.NamedTemporaryFile(mode="w+", delete=False, newline='', encoding='utf-8') as tmp:
-        tmp.write(buf.getvalue())
-        tmp.flush()
-        tmp_name = tmp.name
+    # with tempfile.NamedTemporaryFile(mode="w+", delete=False, newline='', encoding='utf-8') as tmp:
+    #     tmp.write(buf.getvalue())
+    #     tmp.flush()
+    #     tmp_name = tmp.name
 
-    pg_hook.copy_expert(sql=copy_sql, filename=tmp_name)
+    # pg_hook.copy_expert(sql=copy_sql, filename=tmp_name)
 
 # 將 temp table換成 formal table
 # 前面都是寫入 _temp table
@@ -549,6 +549,4 @@ with DAG(
         task_id='clear_redis_keys',
         python_callable=clear_redis_keys,
     )
-
-
     prepare_temp >> gen_batches >> process_batches >> swap >> clear_redis
