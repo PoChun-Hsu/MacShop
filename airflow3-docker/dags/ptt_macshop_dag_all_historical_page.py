@@ -11,7 +11,8 @@
 # 20250724_001 - PoChun Hsu - [Alter]  Column: link with UNIQUE
 # 20250724_002 - PoChun Hsu - [Add]    Column: updated_at. Log the time of data updates.
 # 20250724_003 - PoChun Hsu - [Alter]  Daily update to Manually update.
-# 20250724_004 - PoChun Hsu - [Alter]  Capitalize the table name and column name 
+# 20250724_004 - PoChun Hsu - [Alter]  Capitalize the table name and column name.
+# 20251207_001 - PoChun Hsu - [Alter]  Drop Redis Key with the right name.
 
 # Execution Time：30 minutes
 
@@ -490,7 +491,7 @@ def get_max_page():
 
 # 20250717_001 >>
 def clear_redis_keys():
-    redis_client.delete("Ptt:Macshop:Crawled_Links")
+    redis_client.delete("ptt:macshop:crawled_links") # 20251207_001 
     print("✅ Cleared Redis key: Ptt:Macshop:Crawled_Links")
 # 20250717_001 <<
 
