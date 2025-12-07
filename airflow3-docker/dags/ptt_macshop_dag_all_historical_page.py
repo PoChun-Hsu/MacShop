@@ -13,6 +13,8 @@
 # 20250724_003 - PoChun Hsu - [Alter]  Daily update to Manually update.
 # 20250724_004 - PoChun Hsu - [Alter]  Capitalize the table name and column name 
 
+# Execution Time：30 minutes
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -20,6 +22,7 @@ from datetime import datetime, timezone
 import random
 import asyncio
 import aiohttp
+from aiohttp import ClientConnectorError
 from bs4 import BeautifulSoup
 import redis
 import hashlib
@@ -30,7 +33,7 @@ DEFAULT_START_DATE = datetime(2025, 5, 1)
 # 每次寫入 temp table的資料筆數 = PTT每頁筆數(20) * BATCH_SIZE
 BATCH_SIZE = 100      # 20250702_002
 # 控制最大 thread 數，建議不要超過 5~10，避免被 ban
-CONCURRENT_SIZE = 100 # 20250702_001
+CONCURRENT_SIZE = 10 # 20250702_001
 
 # 20250703_001 >>
 # 定義多種設備，避免被判定成機器人，更像不同使用者
@@ -51,9 +54,7 @@ USER_AGENTS = [
 
     # Firefox - Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-
-    # Firefox - Mac
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",  # Firefox - Mac
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.13; rv:120.0) Gecko/20100101 Firefox/120.0",
 
@@ -92,6 +93,10 @@ def parse_full_datetime(date_str):
     except Exception:
         return None
 
+# 兩個情境需要執行這隻 Code
+# 1. 完全沒資料第一次跑
+# 2. 資料有問題需要重跑
+# 情況１會沒有 Formal Table，因此 CREATE TABLE IF NOT EXISTS
 def prepare_temp_table():
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
     
@@ -161,33 +166,68 @@ def prepare_temp_table():
     #20250717_002 <<
 
 # 20250708_001 >>
+# 有用到 await 就需要在宣告 function 時加上 async
+# 在宣告，例如 task = fetch_ptt_page_async(session, 10)，時不會真的執行
+# 直到 await fetch_ptt_page_async(session, 10) 才真的執行ㄒ
 async def fetch_ptt_page_async(session, page_num):
     # 20250709_001 >>
     # Redis：檢查全局 ban flag
+    # 會被 ban的情況參考下方 redis_client.set("ptt:ban_flag" 那一段
+    # 如果偵測到 ban_flag，那這一頁的資料直接放棄，回傳空值
     if redis_client.get("ptt:ban_flag") == b"1":
         print(f"[SKIP] 被 ban 過，跳過 page {page_num}")
         return []
     # 20250709_001 <<
     
+    # PTT特定版的特定第幾頁
     url = f"https://www.ptt.cc/bbs/{PTT_BOARD}/index{page_num}.html"
     cookies = {'over18': '1'}
+    # 偽裝成不同裝置
     headers = {"User-Agent": random.choice(USER_AGENTS)}
+    # 平行抓取 PTT資料時
+    # await可以確保只影響目前的任務，其他平行跑的任務不受影響
+    # asyncio.sleep 會等待到真正被觸發才 sleep
     await asyncio.sleep(random.uniform(0.2, 1.2))
 
+    # 送出 request 抓東西
     async with session.get(url, cookies=cookies, headers=headers, timeout=10) as resp:
+        # 回傳內容轉純文字
         html = await resp.text()
         
         # 簡單ban偵測
+        # 403: IP 太頻繁被當作 DDOS，User Agent有問題，被反爬蟲機制擋住
+        # 429: 高併發，一次抓太多頁，短時間太多 request，暫時被 ban
+        # over18: PTT要勾已年滿１８歲，需要有 over 18的 cookie
         if resp.status in (403, 429) or 'over18' in html:
             # ban 狀態持續 30秒
             redis_client.set("ptt:ban_flag", "1", ex=30) # 20250709_001 
             raise Exception(f"被Ban/驗證，status:{resp.status}")
         
+        # 最常用 HTML套件，有廣大社群
+        # <div class="r-ent">
+        #     <div class="title">
+        #         <a href="/bbs/MacShop/M.1700000000.A.123.html">[賣/台北] Mac mini 16G</a>
+        #     </div>
+        #     <div class="meta">
+        #         <div class="author">appleboy</div>
+        #         <div class="date">12/05</div>
+        #     </div>
+        # </div>
+        ############## 轉成 ##############
+        # (BeautifulSoup object)
+        # └── div.r-ent
+        #     ├── div.title
+        #     │     └── a[href="/bbs/MacShop/M.1700000000.A.123.html"]
+        #     │           └── "[賣/台北] Mac mini 16G"
+        #     └── div.meta
+        #         ├── div.author  → "appleboy"
+        #         └── div.date    → "12/05"
         soup = BeautifulSoup(html, 'html.parser')
         articles = []
 
         for entry in soup.select("div.r-ent"):
             try:
+                # 從 div.title 中抓出標題和網址
                 title_div = entry.select_one("div.title")
                 a_tag = title_div.select_one("a")
                 title = title_div.text.strip()
@@ -202,9 +242,24 @@ async def fetch_ptt_page_async(session, page_num):
                 date = None
 
                 if link:
+                    # 使用不同的 header帶入不同裝置，等隨機幾秒後開始從網址抓內容
                     art_headers = {"User-Agent": random.choice(USER_AGENTS)}
                     await asyncio.sleep(random.uniform(0.1, 0.4))
                     async with session.get(link, cookies=cookies, headers=art_headers, timeout=10) as art_resp:
+                        # PTT文章結構如下，因此要有第四個 meta-tag才會有發文日期時間
+                        # <span class="article-meta-tag">作者</span>
+                        # <span class="article-meta-value">appleboy</span>
+
+                        # <span class="article-meta-tag">看板</span>
+                        # <span class="article-meta-value">MacShop</span>
+
+                        # <span class="article-meta-tag">標題</span>
+                        # <span class="article-meta-value">[賣/台北] Mac mini</span>
+
+                        # <span class="article-meta-tag">時間</span>
+                        # <span class="article-meta-value">Thu Dec 5 10:27:43 2024</span>
+
+                        
                         art_html = await art_resp.text()
                         art_soup = BeautifulSoup(art_html, "html.parser")
                         meta_values = art_soup.select('span.article-meta-value')
@@ -219,6 +274,9 @@ async def fetch_ptt_page_async(session, page_num):
                         # 20250708_002 <<
 
                         # 20250717_003 >>
+                        # 這個在 full Sync 用不到
+                        # 在 Incremental Sync時，可以用來快速判斷內文是否有更新過，沒更新過的話結果會一致，就跳過
+                        # 反之不一致就要更新
                         description_hash = (
                             hashlib.sha256(description.encode("utf-8")).hexdigest()
                             if description else None
@@ -246,7 +304,8 @@ async def fetch_ptt_page_async(session, page_num):
                 continue
             
         # 20250717_002 >>
-        # 在 return 前記錄 min/max date
+        # 為了 Incremetal Sync的時候能快速知道哪一天的資料從哪一個 page開始更新，因此用 ptt_macshop_page_dates紀錄
+        # ptt_macshop_page_dates 會紀錄每一個 PTT MacShop的最早和最晚日期，才知道某一天後的資料在哪一頁
         if articles:
             valid_dates = [a["Created_Date"] for a in articles if a["Created_Date"]]
             if valid_dates:
@@ -269,13 +328,18 @@ async def fetch_ptt_page_async(session, page_num):
 
         return articles
 
+# 最多同時送 CONCURRENT_SIZE 個 request出去，避免送太多 request被鎖，或是送太少太慢
+# asyncio.as_completed：第一個完成的 task就先寫入 articles中，直到全部寫完
 async def async_extract_articles_batch(start_page, end_page, concurrent=CONCURRENT_SIZE):
     articles = []
     connector = aiohttp.TCPConnector(limit=concurrent)
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [fetch_ptt_page_async(session, page_num) for page_num in range(start_page, end_page + 1)]
+        
+        # 等到第一個完成的 I/O
         for future in asyncio.as_completed(tasks):
             try:
+                # 等到第一個的 page_articles
                 page_articles = await future
                 articles.extend(page_articles)
             except Exception as e:
@@ -285,6 +349,8 @@ async def async_extract_articles_batch(start_page, end_page, concurrent=CONCURRE
     return articles
 # 20250708_001 <<
 
+# 呼叫 async_extract_articles_batch 平行抓取不同 MacShop頁面的資訊
+# Task之間是獨立 process 無法共用記憶體，因此要在不同 Python Process之間傳遞資料要靠 XCom（Cross Communication）
 def extract_articles_batch(start_page, end_page, **context):
     articles = asyncio.run(async_extract_articles_batch(start_page, end_page, concurrent=CONCURRENT_SIZE))
     context['ti'].xcom_push(key='articles', value=articles)
@@ -296,6 +362,8 @@ def load_articles_to_temp(**context):
         return
 
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
+    # 一次打包許多 articles來 insert，因此要展開成 list
+    # 本質上在 SQL內還是多個 insert，只是只有 commit一次就進去，而不是一筆資料 commit一次。
     rows = [
         (
             article['Title'],
@@ -321,7 +389,48 @@ def load_articles_to_temp(**context):
             "Updated_Date"
         ]
     )
+    # 🔁 改成用 COPY（走標準 CSV + copy_expert）
+    # import io
+    # import csv
+    # import tempfile
 
+    # buf = io.StringIO()
+    # writer = csv.writer(buf)
+
+    # for row in rows:
+    #     out_row = []
+    #     for v in row:
+    #         if v is None:
+    #             out_row.append('')
+    #         else:
+    #             if isinstance(v, datetime):
+    #                 out_row.append(v.isoformat(sep=' '))
+    #             else:
+    #                 out_row.append(v)
+    #     writer.writerow(out_row)
+
+    # buf.seek(0)
+
+    # # ✅ 注意：這裡用小寫、不加雙引號，才會對到實際的 table / column
+    # copy_sql = """
+    #     COPY ptt_macshop_articles_temp
+    #     (title, author, created_date, link, description, description_hash, updated_date)
+    #     FROM STDIN WITH (FORMAT csv, NULL '');
+    # """
+
+    # 寫到真正的 temp 檔案
+    with tempfile.NamedTemporaryFile(mode="w+", delete=False, newline='', encoding='utf-8') as tmp:
+        tmp.write(buf.getvalue())
+        tmp.flush()
+        tmp_name = tmp.name
+
+    pg_hook.copy_expert(sql=copy_sql, filename=tmp_name)
+
+# 將 temp table換成 formal table
+# 前面都是寫入 _temp table
+# 1. 把 fromal table改成 _backup table
+# 2. 把 _temp table改成 formal table
+# 3. 把 _backup table刪除
 def swap_tables():
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
     # 如果 backup 存在，先刪掉
@@ -369,6 +478,9 @@ def get_max_page():
     headers = {"User-Agent": random.choice(USER_AGENTS)}
     res = requests.get(url, cookies=cookies, headers=headers)
     soup = BeautifulSoup(res.text, 'html.parser')
+    # 在 PTT 裡第二個 <a> 永遠是「下一頁」按鈕。
+    # 按了下一頁，假設網址是 https://www.ptt.cc/bbs/MacShop/index4002.html
+    # 那代表最新一頁是 4002 + 1 = 4003
     btn = soup.select_one('div.btn-group-paging a.btn.wide:nth-child(2)')
     if btn and 'index' in btn['href']:
         max_page = int(btn['href'].split('index')[1].split('.html')[0]) + 1
@@ -395,6 +507,7 @@ with DAG(
         python_callable=prepare_temp_table,
     )
 
+    # 分 batch，每一 batch分別從第幾頁到第幾頁
     def generate_batches(**context):
         max_page = get_max_page()
         print(f"PTT MacShop max page: {max_page}")
@@ -412,6 +525,7 @@ with DAG(
 
     )
 
+    # 接收 batch，從 start 到 end頁面抓取資料再存入 temp
     def run_batch(**context):
         batch_list = context['ti'].xcom_pull(task_ids='generate_batches', key='batch_list')
         for start_page, end_page in batch_list:
@@ -438,4 +552,3 @@ with DAG(
 
 
     prepare_temp >> gen_batches >> process_batches >> swap >> clear_redis
-  
