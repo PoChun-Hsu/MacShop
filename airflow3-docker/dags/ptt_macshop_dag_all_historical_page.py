@@ -13,6 +13,7 @@
 # 20250724_003 - PoChun Hsu - [Alter]  Daily update to Manually update.
 # 20250724_004 - PoChun Hsu - [Alter]  Capitalize the table name and column name.
 # 20251207_001 - PoChun Hsu - [Alter]  Drop Redis Key with the right name.
+# 20251207_002 - PoChun Hsu - [Alter]  Drop Redis Key in the first step. Make the list is clean in the every execution.
 
 # Execution Time：30 minutes
 
@@ -550,4 +551,4 @@ with DAG(
         task_id='clear_redis_keys',
         python_callable=clear_redis_keys,
     )
-    prepare_temp >> gen_batches >> process_batches >> swap >> clear_redis
+    clear_redis >> prepare_temp >> gen_batches >> process_batches >> swap # 20251207_002
