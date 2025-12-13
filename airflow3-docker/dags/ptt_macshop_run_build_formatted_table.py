@@ -10,6 +10,7 @@
 #    - {"debounce_seconds": 0} 或其他秒數，覆寫等待時間
 
 # 20251010_001 - PoChun Hsu - [Add]     Dataset for trigger across DAGs.
+# 20251213_001 - PoChun Hsu - [Add]     Jobs for turn on/off Spark. Based on practical experience, starting the Spark service only when executing a Spark job results in a higher success rate.
 from __future__ import annotations
 import pendulum
 from datetime import timedelta
@@ -111,6 +112,7 @@ with DAG(
         python_callable=do_debounce,
     )
 
+    # 20251213_001 >>
     from datetime import datetime
     from airflow.providers.docker.operators.docker import DockerOperator
     from docker.types import Mount
@@ -182,7 +184,7 @@ with DAG(
         mount_tmp_dir=False,
         auto_remove="force",
     )
-
+    # 20251213_001 <<
 
     # 真正執行 Spark 建表（受 Pool 控制，避免多 Spark 作業互踩）
     build_formatted_table = BashOperator(
@@ -191,8 +193,8 @@ with DAG(
         pool=POOL_NAME,
         # 匯合點：允許另一支路徑被 skipped，只要沒有 failed，且至少一支成功即可
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
-        retries=2,                          # 失敗時重試 3 次
-        retry_delay=timedelta(seconds=30),  # 每次間隔 60 秒
+        retries=2,                          # 失敗時重試 2 次
+        retry_delay=timedelta(seconds=30),  # 每次間隔 30 秒
         doc_md=f"""
         以 spark-submit 建表。  
         使用 Pool: `{POOL_NAME}` 避免並發互踩。
@@ -204,6 +206,7 @@ with DAG(
         outlets=[FORMATTED_UPDATED],
     )
 
+    # 20251213_001 >>
     stop_spark_services_at_the_end = DockerOperator(
         task_id="docker_compose_stop_spark_at_the_end",
         container_name="airflow-compose-stop-spark",
@@ -236,7 +239,7 @@ with DAG(
         auto_remove="force",
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
     )
-
+    # 20251213_001 <<
 
     # 相依關係（**關鍵**：build_formatted_table 不直接掛 Branch 下）
     latest_only >> branch_on_manual
