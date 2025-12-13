@@ -10,7 +10,7 @@
 #    - {"debounce_seconds": 0} 或其他秒數，覆寫等待時間
 
 # 20251010_001 - PoChun Hsu - [Add]     Dataset for trigger across DAGs.
-
+from __future__ import annotations
 import pendulum
 from datetime import timedelta
 
@@ -23,6 +23,9 @@ from airflow.providers.standard.operators.python import BranchPythonOperator, Py
 from airflow.providers.standard.sensors.time_delta import TimeDeltaSensor
 from airflow.task.trigger_rule import TriggerRule
 
+# from airflow.providers.standard.operators.bash import BashOperator  # :contentReference[oaicite:0]{index=0}
+from airflow.utils.trigger_rule import TriggerRule
+
 
 FORMATTED_UPDATED = Dataset("dataset://ptt_macshop/formatted_updated") # 20251010_001
 
@@ -30,14 +33,14 @@ FORMATTED_UPDATED = Dataset("dataset://ptt_macshop/formatted_updated") # 2025101
 # 基本設定
 # --------------------------
 DAG_ID = "trigger_build_formatted_table"
-# Dataset 來源（與你 UI 圖一致）
+# Dataset 來源
 RAW_UPDATED = Dataset("dataset://ptt_macshop/raw_updated")
 
 # 預設 debounce 秒數（Dataset 觸發時避免過度頻繁重建）
 DEFAULT_DEBOUNCE_SECONDS = 90
 
 # Spark submit 指令（依你提供的語法）
-SPARK_SUBMIT_CMD = "docker exec spark spark-submit /opt/spark-apps/build_formatted_table.py"
+SPARK_SUBMIT_CMD = "docker exec spark spark-submit --packages org.postgresql:postgresql:42.7.3 /opt/spark-apps/build_formatted_table.py"
 
 # Airflow Pool 名稱（請確保已建立）
 POOL_NAME = "ptt_formatted_build_pool"
@@ -108,6 +111,79 @@ with DAG(
         python_callable=do_debounce,
     )
 
+    from datetime import datetime
+    from airflow.providers.docker.operators.docker import DockerOperator
+    from docker.types import Mount
+
+    HOST_PROJECT_PATH = "/Users/sherryli/Desktop/MacShop/airflow3-docker"
+
+    stop_spark_services = DockerOperator(
+        task_id="docker_compose_stop_spark",
+        container_name="airflow-compose-stop-spark",
+        image="docker:27.1.1-cli",
+        docker_url="unix://var/run/docker.sock",
+        working_dir=HOST_PROJECT_PATH,
+        command=[
+            "docker",
+            "compose",
+            "-f",
+            "docker-compose.yaml",
+            "stop",
+            "spark",
+            "spark-worker",
+            "spark-history",
+        ],
+        mounts=[
+            Mount(
+                source="/var/run/docker.sock",
+                target="/var/run/docker.sock",
+                type="bind",
+            ),
+            Mount(
+                source=HOST_PROJECT_PATH,
+                target=HOST_PROJECT_PATH,
+                type="bind",
+            ),
+        ],
+        mount_tmp_dir=False,
+        auto_remove="force",
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+    )
+
+    start_spark_services = DockerOperator(
+        task_id="docker_compose_up_spark",
+        container_name="airflow-compose-up-spark",
+        image="docker:27.1.1-cli",
+        docker_url="unix://var/run/docker.sock",
+        working_dir=HOST_PROJECT_PATH,
+        command=[
+            "docker",
+            "compose",
+            "-f",
+            "docker-compose.yaml",
+            "up",
+            "-d",
+            "spark",
+            "spark-worker",
+            "spark-history",
+        ],
+        mounts=[
+            Mount(
+                source="/var/run/docker.sock",
+                target="/var/run/docker.sock",
+                type="bind",
+            ),
+            Mount(
+                source=HOST_PROJECT_PATH,
+                target=HOST_PROJECT_PATH,
+                type="bind",
+            ),
+        ],
+        mount_tmp_dir=False,
+        auto_remove="force",
+    )
+
+
     # 真正執行 Spark 建表（受 Pool 控制，避免多 Spark 作業互踩）
     build_formatted_table = BashOperator(
         task_id="build_formatted_table",
@@ -115,8 +191,8 @@ with DAG(
         pool=POOL_NAME,
         # 匯合點：允許另一支路徑被 skipped，只要沒有 failed，且至少一支成功即可
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
-        retries=3,                          # 失敗時重試 3 次
-        retry_delay=timedelta(seconds=10),  # 每次間隔 60 秒
+        retries=2,                          # 失敗時重試 3 次
+        retry_delay=timedelta(seconds=30),  # 每次間隔 60 秒
         doc_md=f"""
         以 spark-submit 建表。  
         使用 Pool: `{POOL_NAME}` 避免並發互踩。
@@ -128,8 +204,41 @@ with DAG(
         outlets=[FORMATTED_UPDATED],
     )
 
+    stop_spark_services_at_the_end = DockerOperator(
+        task_id="docker_compose_stop_spark_at_the_end",
+        container_name="airflow-compose-stop-spark",
+        image="docker:27.1.1-cli",
+        docker_url="unix://var/run/docker.sock",
+        working_dir=HOST_PROJECT_PATH,
+        command=[
+            "docker",
+            "compose",
+            "-f",
+            "docker-compose.yaml",
+            "stop",
+            "spark",
+            "spark-worker",
+            "spark-history",
+        ],
+        mounts=[
+            Mount(
+                source="/var/run/docker.sock",
+                target="/var/run/docker.sock",
+                type="bind",
+            ),
+            Mount(
+                source=HOST_PROJECT_PATH,
+                target=HOST_PROJECT_PATH,
+                type="bind",
+            ),
+        ],
+        mount_tmp_dir=False,
+        auto_remove="force",
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+    )
+
 
     # 相依關係（**關鍵**：build_formatted_table 不直接掛 Branch 下）
     latest_only >> branch_on_manual
     branch_on_manual >> [go_build, debounce]
-    [go_build, debounce] >> build_formatted_table
+    [go_build, debounce] >>  stop_spark_services >> start_spark_services >> build_formatted_table >> stop_spark_services_at_the_end
