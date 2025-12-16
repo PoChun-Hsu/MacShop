@@ -42,18 +42,21 @@ PG_CONN_ID  = Variable.get("PG_CONN_ID", default_var="postgres_default")
 GCP_CONN_ID = Variable.get("GCP_CONN_ID", default_var="google_cloud_default")
 
 # 可調參數
+# 每次寫入 google sheet的 cell數量上限
 MAX_CELLS_PER_CHUNK   = int(Variable.get("SHEETS_MAX_CELLS_PER_CHUNK", default_var="20000"))
 REQUEST_TIMEOUT_SEC   = int(Variable.get("SHEETS_REQUEST_TIMEOUT_SEC", default_var="120"))
 EXECUTE_NUM_RETRIES   = int(Variable.get("SHEETS_EXECUTE_NUM_RETRIES", default_var="5"))
 DATETIME_FMT          = Variable.get("SHEETS_DATETIME_FMT", default_var="%Y-%m-%d %H:%M:%S")
 
 # 自動擴表的額外 buffer
+# 每次自動往外新增 100 row or 5 column
 EXTRA_ROW_BUFFER      = int(Variable.get("SHEETS_EXTRA_ROW_BUFFER", default_var="100"))
 EXTRA_COL_BUFFER      = int(Variable.get("SHEETS_EXTRA_COL_BUFFER", default_var="5"))
 
 # 單一儲存格字元上限（Google Sheets 固定為 50000；保留成參數以便容錯/測試）
 SHEETS_MAX_CELL_CHARS = int(Variable.get("SHEETS_MAX_CELL_CHARS", default_var="50000"))
 # 超過上限時的策略：truncate / fail / trim_whitespace
+# 通常會超過是因為內文包含了太多留言，目前用不到留言內容，所以直接拋棄
 SHEETS_OVERFLOW_POLICY = Variable.get("SHEETS_OVERFLOW_POLICY", default_var="truncate").lower()
 # truncate 的尾註（提示被截斷）
 TRUNCATION_SUFFIX = Variable.get("SHEETS_TRUNCATION_SUFFIX", default_var=" …[truncated]")
@@ -62,6 +65,7 @@ TRUNCATION_SUFFIX = Variable.get("SHEETS_TRUNCATION_SUFFIX", default_var=" …[t
 # ===================== 共用：execute 包裝 =====================
 def execute_with_timeout(request, timeout: int = REQUEST_TIMEOUT_SEC, num_retries: int = EXECUTE_NUM_RETRIES):
     """在 execute 時設定 timeout / 重試（新版相容）。"""
+    # 萬一不能帶 timeout參數時改傳沒有 timeout參數的執行指令
     try:
         return request.execute(num_retries=num_retries, timeout=timeout)
     except TypeError:
@@ -69,6 +73,8 @@ def execute_with_timeout(request, timeout: int = REQUEST_TIMEOUT_SEC, num_retrie
 
 
 # ===================== A1 / 分塊 =====================
+# 因為 google sheet 的 column是 A, B, ...
+# 把第一欄轉為 A欄，第二欄轉為 B欄 . . .
 def number_to_column_letters(n: int) -> str:
     s = ""
     n = int(n)
@@ -80,13 +86,16 @@ def number_to_column_letters(n: int) -> str:
         n -= 1
     return s
 
-
+# 定義 google sheet使用到的範圍
 def a1_range(start_row: int, start_col: int, rows: int, cols: int) -> str:
     start = f"{number_to_column_letters(start_col)}{start_row+1}"
     end   = f"{number_to_column_letters(start_col+cols-1)}{start_row+rows}"
     return f"{start}:{end}"
 
-
+# Google sheet API只接受二維陣列的格式（List[List[Any]]）
+# 因為 fetch_data_from_postgres()會把值匯總成 List[List[Any]]
+# 寫入時要把 List[List[Any]] 切成多個 List[Any], List[Any], ...
+# List[Any] 的值塞進去 cell
 def chunk_by_cells(values: List[List[Any]], max_cells: int) -> Iterable[List[List[Any]]]:
     """根據最大儲存格數量分塊，避免超大批次寫入。"""
     if not values:
@@ -128,7 +137,7 @@ def enforce_cell_limit(text: str) -> str:
     keep = max(0, SHEETS_MAX_CELL_CHARS - len(suffix))
     return (text[:keep] + suffix)[:SHEETS_MAX_CELL_CHARS]
 
-
+# 把 Datetime, Decimal, list等 google sheet不接受的格式做適當轉換
 def to_json_safe(v: Any) -> Any:
     """將非 JSON 型別轉成 Sheets 友善格式，並對字串套用長度限制。"""
     if isinstance(v, (datetime, date)):
@@ -165,6 +174,7 @@ def fetch_data_from_postgres(sql: str, pg_conn_id: str) -> List[List[Any]]:
     cur.close()
     conn.close()
 
+    # to_json_safe: 確保資料格式可被 google sheet接受
     safe_rows = [[to_json_safe(cell) for cell in row] for row in rows]
     return [headers] + safe_rows
 
@@ -174,12 +184,16 @@ def ensure_sheet_size(spreadsheet_id: str, sheet_name: str, rows_needed: int, co
     creds = GoogleBaseHook(gcp_conn_id=gcp_conn_id).get_credentials()
     service = build('sheets', 'v4', credentials=creds)
 
+    # 抓 spreadsheet metadata，只要 sheetId、title、row/column 數
     meta_req = service.spreadsheets().get(
         spreadsheetId=spreadsheet_id,
         includeGridData=False,
         fields="sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))"
     )
     meta = execute_with_timeout(meta_req)
+
+    # 找出指定名稱的 sheet
+    # 找不到直接中斷報 Error
     target = None
     for s in meta.get("sheets", []):
         props = s.get("properties", {})
@@ -189,13 +203,16 @@ def ensure_sheet_size(spreadsheet_id: str, sheet_name: str, rows_needed: int, co
     if not target:
         raise ValueError(f"Sheet '{sheet_name}' 不存在，請先建立該分頁或確認名稱大小寫。")
 
+     # 取得指定 sheet 的 row / column 數
     sheet_id = target["sheetId"]
     current_rows = target.get("gridProperties", {}).get("rowCount", 1000)
     current_cols = target.get("gridProperties", {}).get("columnCount", 26)
 
+    # 計算所需的 Row and Column數
     new_rows = max(current_rows, rows_needed + EXTRA_ROW_BUFFER)
     new_cols = max(current_cols, cols_needed + EXTRA_COL_BUFFER)
 
+    # 目前 Row or Column數不夠的話要先擴增
     if new_rows > current_rows or new_cols > current_cols:
         req = service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
@@ -229,11 +246,15 @@ def clear_sheet(spreadsheet_id: str, sheet_name: str, gcp_conn_id: str) -> None:
 
 
 # ===================== 分塊 + 批次寫入 =====================
+# MAX_CELLS_PER_CHUNK ２萬，因此每次寫入 5個 block = 5*2萬 = 10萬
+# 實務上最後一個 block可能沒有滿，因此是 <= 10萬
+# 2025-12-16 時一個 row 34個欄位，10萬／34 = 一次大約是 2941筆資料
 def upload_values_in_batches(spreadsheet_id: str, sheet_name: str, values: List[List[Any]], gcp_conn_id: str) -> int:
     creds = GoogleBaseHook(gcp_conn_id=gcp_conn_id).get_credentials()
     service = build('sheets', 'v4', credentials=creds)
     sheets = service.spreadsheets().values()
 
+    # 紀錄實際寫入的 cell數，目前寫到第幾 row
     total_cells, row_cursor = 0, 0
     body_data = []
 
@@ -241,6 +262,7 @@ def upload_values_in_batches(spreadsheet_id: str, sheet_name: str, values: List[
         rows = len(block)
         cols = len(block[0]) if rows else 0
         rng = a1_range(row_cursor, 0, rows, cols)
+        
         body_data.append({"range": f"{sheet_name}!{rng}", "values": block})
         total_cells += rows * cols
         row_cursor += rows
@@ -252,7 +274,8 @@ def upload_values_in_batches(spreadsheet_id: str, sheet_name: str, values: List[
             )
             execute_with_timeout(request)
             body_data = []
-
+    
+    # 不滿 len(body_data) >= 5 最後要處理一次
     if body_data:
         request = sheets.batchUpdate(
             spreadsheetId=spreadsheet_id,
@@ -266,13 +289,20 @@ def upload_values_in_batches(spreadsheet_id: str, sheet_name: str, values: List[
 # ===================== 主任務 =====================
 def task_export_and_upload(**context):
     """主要任務：從 Postgres 匯出並上傳至 Google Sheets"""
+    # 1. 載入 Postgres的資料
     values = fetch_data_from_postgres(SQL_QUERY, PG_CONN_ID)
-
+    
+    # 2. 計算所需 column and row 數量
     rows_needed = len(values)
     cols_needed = max((len(r) for r in values), default=0)
-
+    
+    # 3. 如果 column or row數量不夠要擴增
     ensure_sheet_size(SPREADSHEET_ID, SHEET_NAME, rows_needed, cols_needed, GCP_CONN_ID)
+    
+    # 4. 清空 google sheet
     clear_sheet(SPREADSHEET_ID, SHEET_NAME, GCP_CONN_ID)
+    
+    # 5. 一次append 5*block，最多１０萬個 cells，約 2941筆資料到 google sheet
     cells = upload_values_in_batches(SPREADSHEET_ID, SHEET_NAME, values, GCP_CONN_ID)
 
     return {"rows": rows_needed, "cols": cols_needed, "cells_written": cells}
