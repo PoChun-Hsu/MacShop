@@ -124,6 +124,8 @@ def prepare_temp_table():
 
     # 20250717_001 >>
     # 如果 formal table 不存在要創建，已存在就保留
+    # id 欄位是自動排序建立的 PK，INCLUDING ALL 會導致 id 欄位直接引用原本 temp table的 id
+    # 因此還要把 ARTICLE_TABLE 的 id欄位改成 ARTICLE_TABLE 本身自己的 Serial
     pg_hook.run(f"""
         DO $$
         BEGIN
@@ -138,6 +140,17 @@ def prepare_temp_table():
         END
         $$;
     """, autocommit=True)
+
+    pg_hook.run("""
+        CREATE SEQUENCE IF NOT EXISTS ptt_macshop_articles_id_seq;
+
+        ALTER TABLE Ptt_Macshop_Articles
+        ALTER COLUMN id SET DEFAULT nextval('ptt_macshop_articles_id_seq');
+
+        ALTER SEQUENCE ptt_macshop_articles_id_seq
+        OWNED BY Ptt_Macshop_Articles.id;
+    """, autocommit=True)
+
 
     print("✅ Tables prepared: articles")
     #20250717_002 <<
@@ -219,8 +232,8 @@ async def fetch_ptt_page_async(session, page_num):
                     break  # 成功拿到 html 就跳出 retry loop
 
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                if attempt == 2:
-                    raise
+                print(f"[WARN] page {page_num} failed after retry, skip")
+                return []   # ❗不要 raise
                 await asyncio.sleep(2 ** attempt)
         
         # 最常用 HTML套件，有廣大社群
