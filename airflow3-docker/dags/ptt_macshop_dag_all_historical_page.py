@@ -124,19 +124,21 @@ def prepare_temp_table():
 
     # 20250717_001 >>
     # 如果 formal table 不存在要創建，已存在就保留
-    create_articles_table_sql = f"""
-        CREATE TABLE IF NOT EXISTS {ARTICLE_TABLE} (
-            Id SERIAL PRIMARY KEY,
-            Title TEXT,
-            Author TEXT,
-            Created_Date TIMESTAMP,
-            Link TEXT UNIQUE, -- # 20250724_001
-            Description TEXT,
-            Description_Hash TEXT,
-            Updated_Date TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- # 20250724_002 
-        );
-    """
-    pg_hook.run(create_articles_table_sql, autocommit=True)
+    pg_hook.run(f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_name = '{ARTICLE_TABLE.lower()}'
+            ) THEN
+                CREATE TABLE {ARTICLE_TABLE}
+                (LIKE {ARTICLE_TABLE}_Temp INCLUDING ALL);
+            END IF;
+        END
+        $$;
+    """, autocommit=True)
+
     print("✅ Tables prepared: articles")
     #20250717_002 <<
 
@@ -157,15 +159,11 @@ def prepare_temp_table():
 
 
     # 如果 formal table 不存在要創建，已存在就保留
-    create_page_dates_table_sql = f"""
-        CREATE TABLE IF NOT EXISTS {PAGE_TABLE} (
-            Page_Num INTEGER PRIMARY KEY,
-            Url TEXT,
-            Min_Date TIMESTAMP,
-            Max_Date TIMESTAMP
-        );
-    """
-    pg_hook.run(create_page_dates_table_sql, autocommit=True)
+    pg_hook.run(f"""
+        CREATE TABLE IF NOT EXISTS {PAGE_TABLE}
+        (LIKE {PAGE_TABLE}_Temp INCLUDING ALL);
+    """, autocommit=True)
+
     print("✅ Tables prepared: page_dates")
     #20250717_002 <<
 
