@@ -14,8 +14,12 @@
 # 20250724_004 - PoChun Hsu - [Alter]  Capitalize the table name and column name.
 # 20251207_001 - PoChun Hsu - [Alter]  Drop Redis Key with the right name.
 # 20251207_002 - PoChun Hsu - [Alter]  Drop Redis Key in the first step. Make the list is clean in the every execution.
+# 20260104_001 - PoChun Hsu - [Alter]  Parameterize table name.
+# 20260104_002 - PoChun Hsu - [Add]    Retry.
+# 20260104_003 - PoChun Hsu - [Drop]   raise error message. Prevent process terminate by error.
+# 20260104_004 - PoChun Hsu - [Alter]  Truncate table than insert. Prevent delete formal table than rename.
 
-# Execution Time：30 minutes
+# Execution Time：20 minutes
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -36,6 +40,8 @@ DEFAULT_START_DATE = datetime(2025, 5, 1)
 BATCH_SIZE = 100      # 20250702_002
 # 控制最大 thread 數，建議不要超過 5~10，避免被 ban
 CONCURRENT_SIZE = 10 # 20250702_001
+ARTICLE_TABLE = 'Ptt_Macshop_Articles'   # 20260104_001
+PAGE_TABLE    = 'Ptt_Macshop_Page_Dates' # 20260104_001
 
 # 20250703_001 >>
 # 定義多種設備，避免被判定成機器人，更像不同使用者
@@ -104,9 +110,10 @@ def prepare_temp_table():
     
     # 建構 Article相關 tables 
     # 如果 temp table 已存在就刪除，確保 temp table是空的
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Articles_Temp;", autocommit=True)
-    create_articles_temp_table_sql = """
-    CREATE TABLE Ptt_Macshop_Articles_Temp (
+    # 20260104_001 >>
+    pg_hook.run(f"DROP TABLE IF EXISTS {ARTICLE_TABLE}_Temp;", autocommit=True)
+    create_articles_temp_table_sql = f"""
+    CREATE TABLE {ARTICLE_TABLE}_Temp (
         Id SERIAL PRIMARY KEY,
         Title TEXT,
         Author TEXT,
@@ -117,53 +124,70 @@ def prepare_temp_table():
         Updated_Date TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- # 20250724_002 
     );
     """ # 20250708_001
+    # 20260104_001 <<
     pg_hook.run(create_articles_temp_table_sql, autocommit=True)
     print("✅ Tables prepared: articles_temp")
 
     # 20250717_001 >>
     # 如果 formal table 不存在要創建，已存在就保留
-    create_articles_table_sql = """
-        CREATE TABLE IF NOT EXISTS Ptt_Macshop_Articles (
-            Id SERIAL PRIMARY KEY,
-            Title TEXT,
-            Author TEXT,
-            Created_Date TIMESTAMP,
-            Link TEXT UNIQUE, -- # 20250724_001
-            Description TEXT,
-            Description_Hash TEXT,
-            Updated_Date TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- # 20250724_002 
-        );
-    """
-    pg_hook.run(create_articles_table_sql, autocommit=True)
+    # id 欄位是自動排序建立的 PK，INCLUDING ALL 會導致 id 欄位直接引用原本 temp table的 id
+    # 因此還要把 ARTICLE_TABLE 的 id欄位改成 ARTICLE_TABLE 本身自己的 Serial
+    # 20260104_001 >>
+    pg_hook.run(f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_name = '{ARTICLE_TABLE.lower()}'
+            ) THEN
+                CREATE TABLE {ARTICLE_TABLE}
+                (LIKE {ARTICLE_TABLE}_Temp INCLUDING ALL);
+            END IF;
+        END
+        $$;
+    """, autocommit=True)
+
+    pg_hook.run(f"""
+        CREATE SEQUENCE IF NOT EXISTS ptt_macshop_articles_id_seq;
+
+        ALTER TABLE {ARTICLE_TABLE}
+        ALTER COLUMN id SET DEFAULT nextval('ptt_macshop_articles_id_seq');
+
+        ALTER SEQUENCE ptt_macshop_articles_id_seq
+        OWNED BY {ARTICLE_TABLE}.id;
+    """, autocommit=True)
+    # 20260104_001 <<
+
     print("✅ Tables prepared: articles")
     #20250717_002 <<
 
     #20250717_002 >>
     # 建構 Ptt 每一頁對應的最小最大日期相關 tables 
     # 如果 temp table 已存在就刪除，確保 temp table是空的
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Temp;", autocommit=True)
-    create_page_dates_temp_table_sql = """
-        CREATE TABLE IF NOT EXISTS Ptt_Macshop_Page_Dates_Temp (
+    # 20260104_001 >>
+    pg_hook.run(f"DROP TABLE IF EXISTS {PAGE_TABLE}_Temp;", autocommit=True)
+    create_page_dates_temp_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS {PAGE_TABLE}_Temp (
             Page_Num INTEGER PRIMARY KEY,
             Url TEXT,
             Min_Date TIMESTAMP,
             Max_Date TIMESTAMP
         );
     """
+    # 20260104_001 <<
     pg_hook.run(create_page_dates_temp_table_sql, autocommit=True)
     print("✅ Tables prepared: page_dates_temp")
 
 
     # 如果 formal table 不存在要創建，已存在就保留
-    create_page_dates_table_sql = """
-        CREATE TABLE IF NOT EXISTS Ptt_Macshop_Page_Dates (
-            Page_Num INTEGER PRIMARY KEY,
-            Url TEXT,
-            Min_Date TIMESTAMP,
-            Max_Date TIMESTAMP
-        );
-    """
-    pg_hook.run(create_page_dates_table_sql, autocommit=True)
+    # 20260104_001 >>
+    pg_hook.run(f"""
+        CREATE TABLE IF NOT EXISTS {PAGE_TABLE}
+        (LIKE {PAGE_TABLE}_Temp INCLUDING ALL);
+    """, autocommit=True)
+    # 20260104_001 <<
+
     print("✅ Tables prepared: page_dates")
     #20250717_002 <<
 
@@ -171,6 +195,8 @@ def prepare_temp_table():
 # 有用到 await 就需要在宣告 function 時加上 async
 # 在宣告，例如 task = fetch_ptt_page_async(session, 10)，時不會真的執行
 # 直到 await fetch_ptt_page_async(session, 10) 才真的執行ㄒ
+from aiohttp import ClientError
+
 async def fetch_ptt_page_async(session, page_num):
     # 20250709_001 >>
     # Redis：檢查全局 ban flag
@@ -200,10 +226,24 @@ async def fetch_ptt_page_async(session, page_num):
         # 403: IP 太頻繁被當作 DDOS，User Agent有問題，被反爬蟲機制擋住
         # 429: 高併發，一次抓太多頁，短時間太多 request，暫時被 ban
         # over18: PTT要勾已年滿１８歲，需要有 over 18的 cookie
-        if resp.status in (403, 429) or 'over18' in html:
-            # ban 狀態持續 30秒
-            redis_client.set("ptt:ban_flag", "1", ex=30) # 20250709_001 
-            raise Exception(f"被Ban/驗證，status:{resp.status}")
+        # 20260104_002 >>
+        for attempt in range(3):
+            try:
+                async with session.get(url, cookies=cookies, headers=headers, timeout=10) as resp:
+                    html = await resp.text()
+
+                    if resp.status in (403, 429) or 'over18' in html:
+                        # ban 狀態持續 30秒
+                        redis_client.set("ptt:ban_flag", "1", ex=30)
+                        raise Exception(f"被Ban/驗證，status:{resp.status}")
+
+                    break  # 成功拿到 html 就跳出 retry loop
+
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                print(f"[WARN] page {page_num} failed after retry, skip")
+                return []   # ❗不要 raise避免中斷
+                await asyncio.sleep(2 ** attempt)
+        # 20260104_002 <<
         
         # 最常用 HTML套件，有廣大社群
         # <div class="r-ent">
@@ -247,43 +287,58 @@ async def fetch_ptt_page_async(session, page_num):
                     # 使用不同的 header帶入不同裝置，等隨機幾秒後開始從網址抓內容
                     art_headers = {"User-Agent": random.choice(USER_AGENTS)}
                     await asyncio.sleep(random.uniform(0.1, 0.4))
-                    async with session.get(link, cookies=cookies, headers=art_headers, timeout=10) as art_resp:
-                        # PTT文章結構如下，因此要有第四個 meta-tag才會有發文日期時間
-                        # <span class="article-meta-tag">作者</span>
-                        # <span class="article-meta-value">appleboy</span>
+                    # PTT文章結構如下，因此要有第四個 meta-tag才會有發文日期時間
+                    # <span class="article-meta-tag">作者</span>
+                    # <span class="article-meta-value">appleboy</span>
 
-                        # <span class="article-meta-tag">看板</span>
-                        # <span class="article-meta-value">MacShop</span>
+                    # <span class="article-meta-tag">看板</span>
+                    # <span class="article-meta-value">MacShop</span>
 
-                        # <span class="article-meta-tag">標題</span>
-                        # <span class="article-meta-value">[賣/台北] Mac mini</span>
+                    # <span class="article-meta-tag">標題</span>
+                    # <span class="article-meta-value">[賣/台北] Mac mini</span>
 
-                        # <span class="article-meta-tag">時間</span>
-                        # <span class="article-meta-value">Thu Dec 5 10:27:43 2024</span>
+                    # <span class="article-meta-tag">時間</span>
+                    # <span class="article-meta-value">Thu Dec 5 10:27:43 2024</span>
 
+                    # 20260104_002 >>   
+                    art_html = None
+
+                    for attempt in range(3):
+                        try:
+                            async with session.get(link, cookies=cookies, headers=art_headers, timeout=10) as art_resp:
+                                art_html = await art_resp.text()
+                            break  # 成功就離開 retry
+                        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                            if attempt == 2:
+                                print(f"[WARN] article fetch failed, skip link: {link}")
+                            await asyncio.sleep(2 ** attempt)
+
+                    # 如果三次都失敗，直接跳過這篇文章
+                    if not art_html:
+                        continue
+                    # 20260104_002 <<
                         
-                        art_html = await art_resp.text()
-                        art_soup = BeautifulSoup(art_html, "html.parser")
-                        meta_values = art_soup.select('span.article-meta-value')
-                        if len(meta_values) >= 4:
-                            date_str = meta_values[3].text.strip()
-                            date = parse_full_datetime(date_str)
+                    art_soup = BeautifulSoup(art_html, "html.parser")
+                    meta_values = art_soup.select('span.article-meta-value')
+                    if len(meta_values) >= 4:
+                        date_str = meta_values[3].text.strip()
+                        date = parse_full_datetime(date_str)
 
-                        # 20250708_002 >>
-                        # 取得文章主體內容
-                        content_div = art_soup.select_one("#main-content")
-                        description = content_div.get_text(separator="\n", strip=True) if content_div else None
-                        # 20250708_002 <<
+                    # 20250708_002 >>
+                    # 取得文章主體內容
+                    content_div = art_soup.select_one("#main-content")
+                    description = content_div.get_text(separator="\n", strip=True) if content_div else None
+                    # 20250708_002 <<
 
-                        # 20250717_003 >>
-                        # 這個在 full Sync 用不到
-                        # 在 Incremental Sync時，可以用來快速判斷內文是否有更新過，沒更新過的話結果會一致，就跳過
-                        # 反之不一致就要更新
-                        description_hash = (
-                            hashlib.sha256(description.encode("utf-8")).hexdigest()
-                            if description else None
-                        )
-                        # 20250717_003 <<
+                    # 20250717_003 >>
+                    # 這個在 full Sync 用不到
+                    # 在 Incremental Sync時，可以用來快速判斷內文是否有更新過，沒更新過的話結果會一致，就跳過
+                    # 反之不一致就要更新
+                    description_hash = (
+                        hashlib.sha256(description.encode("utf-8")).hexdigest()
+                        if description else None
+                    )
+                    # 20250717_003 <<
 
                 # 20250709_001
                 # ✅ Redis：標記這篇文章已經爬過（加入 Set）
@@ -302,7 +357,7 @@ async def fetch_ptt_page_async(session, page_num):
             except Exception as e:
                 print(f"Error parsing entry: {e}")
                 print(traceback.format_exc())
-                raise e  # 一定要 re-raise
+                # raise e  # 一定要 re-raise # 20260104_003 
                 continue
             
         # 20250717_002 >>
@@ -316,8 +371,8 @@ async def fetch_ptt_page_async(session, page_num):
 
                 pg_hook = PostgresHook(postgres_conn_id="postgres_default")
                 pg_hook.run(
-                    """
-                    INSERT INTO ptt_macshop_page_dates_temp (Page_Num, Url, Min_date, Max_date)
+                    f"""
+                    INSERT INTO {PAGE_TABLE}_temp (Page_Num, Url, Min_date, Max_date)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (Page_Num) DO UPDATE
                     SET Min_Date = EXCLUDED.Min_Date,
@@ -344,10 +399,15 @@ async def async_extract_articles_batch(start_page, end_page, concurrent=CONCURRE
                 # 等到第一個的 page_articles
                 page_articles = await future
                 articles.extend(page_articles)
+            except aiohttp.ClientConnectorError as e:
+                print(f"[WARN] Connection error, skip one page: {e}")
+                continue
+
             except Exception as e:
-                print(f"[Async error] {e}")
+                # 只有「你明確想中斷 DAG」的錯，才 raise
+                print(f"[ERROR] Unexpected error: {e}")
                 print(traceback.format_exc())
-                raise e  # 一定要 re-raise
+                raise
     return articles
 # 20250708_001 <<
 
@@ -378,8 +438,9 @@ def load_articles_to_temp(**context):
         )
         for article in articles
     ]
+    # 20260104_001
     pg_hook.insert_rows(
-        table="Ptt_Macshop_Articles_Temp",
+        table=f"{ARTICLE_TABLE}_Temp",
         rows=rows,
         target_fields=[
             "Title",
@@ -391,86 +452,91 @@ def load_articles_to_temp(**context):
             "Updated_Date"
         ]
     )
-    # 🔁 改成用 COPY（走標準 CSV + copy_expert）
-    # import io
-    # import csv
-    # import tempfile
-
-    # buf = io.StringIO()
-    # writer = csv.writer(buf)
-
-    # for row in rows:
-    #     out_row = []
-    #     for v in row:
-    #         if v is None:
-    #             out_row.append('')
-    #         else:
-    #             if isinstance(v, datetime):
-    #                 out_row.append(v.isoformat(sep=' '))
-    #             else:
-    #                 out_row.append(v)
-    #     writer.writerow(out_row)
-
-    # buf.seek(0)
-
-    # # ✅ 注意：這裡用小寫、不加雙引號，才會對到實際的 table / column
-    # copy_sql = """
-    #     COPY ptt_macshop_articles_temp
-    #     (title, author, created_date, link, description, description_hash, updated_date)
-    #     FROM STDIN WITH (FORMAT csv, NULL '');
-    # """
-
-    # 寫到真正的 temp 檔案
-    # with tempfile.NamedTemporaryFile(mode="w+", delete=False, newline='', encoding='utf-8') as tmp:
-    #     tmp.write(buf.getvalue())
-    #     tmp.flush()
-    #     tmp_name = tmp.name
-
-    # pg_hook.copy_expert(sql=copy_sql, filename=tmp_name)
-
+    
 # 將 temp table換成 formal table
 # 前面都是寫入 _temp table
 # 1. 把 fromal table改成 _backup table
 # 2. 把 _temp table改成 formal table
 # 3. 把 _backup table刪除
-def swap_tables():
+# 20260104_004 >>
+def insert_into_formal_tables():
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
-    # 如果 backup 存在，先刪掉
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Articles_Backup;", autocommit=True)
-    # 如果正式表存在，rename 成 backup
-    result = pg_hook.get_first("""
-        SELECT to_regclass('public.Ptt_Macshop_Articles') IS NOT NULL;
-    """)
-    if result and result[0]:
-        pg_hook.run("ALTER TABLE Ptt_Macshop_Articles RENAME TO Ptt_Macshop_Articles_Backup;", autocommit=True)
-    # temp rename to 正式表
-    pg_hook.run("ALTER TABLE Ptt_Macshop_Articles_Temp RENAME TO Ptt_Macshop_Articles;", autocommit=True)
-    
-    pg_hook.run("CREATE INDEX IF NOT EXISTS idx_description_hash ON Ptt_Macshop_Articles(Description_Hash);", autocommit=True) # 20250717_003
+# ===============================
+    # Articles
+    # ===============================
+    pg_hook.run(f"""
+        BEGIN;
 
-    # 刪除 backup
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Articles_Backup;", autocommit=True)
+        -- 1️⃣ 清空正式表（保留 table / index / sequence）
+        TRUNCATE TABLE {ARTICLE_TABLE};
 
-    # 20250717_002 >>
-    # 如果 backup 存在，先刪掉
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
-    # 如果正式表存在，rename 成 backup
-    result = pg_hook.get_first("""
-        SELECT to_regclass('public.Ptt_Macshop_Page_Dates') IS NOT NULL;
-    """)
-    if result and result[0]:
-        pg_hook.run("ALTER TABLE Ptt_Macshop_Page_Dates RENAME TO Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
-    # temp rename to 正式表
-    pg_hook.run("ALTER TABLE Ptt_Macshop_Page_Dates_Temp RENAME TO Ptt_Macshop_Page_Dates;", autocommit=True)
-    # 刪除 backup
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
+        -- 2️⃣ 將 temp 資料寫入正式表
+        INSERT INTO {ARTICLE_TABLE} (
+            Title,
+            Author,
+            Created_Date,
+            Link,
+            Description,
+            Description_Hash,
+            Updated_Date
+        )
+        SELECT
+            Title,
+            Author,
+            Created_Date,
+            Link,
+            Description,
+            Description_Hash,
+            Updated_Date
+        FROM {ARTICLE_TABLE}_Temp;
 
-    create_page_dates_index_sql = """
-    CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_min_date ON Ptt_Macshop_Page_Dates(Min_Date);
-    CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_max_date ON Ptt_Macshop_Page_Dates(Max_Date);
-    """
-    pg_hook.run(create_page_dates_index_sql, autocommit=True)
-    # 20250717_002 <<
+        -- 3️⃣ 刪掉 temp table（只刪 temp，安全）
+        DROP TABLE IF EXISTS {ARTICLE_TABLE}_Temp;
+
+        COMMIT;
+    """, autocommit=True)
+
+    # index 保險（即使已存在也不影響）
+    pg_hook.run(f"""
+        CREATE INDEX IF NOT EXISTS idx_description_hash
+        ON {ARTICLE_TABLE}(Description_Hash);
+    """, autocommit=True)
+
+    # ===============================
+    # Page Dates
+    # ===============================
+    pg_hook.run(f"""
+        BEGIN;
+
+        TRUNCATE TABLE {PAGE_TABLE};
+
+        INSERT INTO {PAGE_TABLE} (
+            Page_Num,
+            Url,
+            Min_Date,
+            Max_Date
+        )
+        SELECT
+            Page_Num,
+            Url,
+            Min_Date,
+            Max_Date
+        FROM {PAGE_TABLE}_Temp;
+
+        DROP TABLE IF EXISTS {PAGE_TABLE}_Temp;
+
+        COMMIT;
+    """, autocommit=True)
+
+    # index 保險
+    pg_hook.run(f"""
+        CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_min_date
+        ON {PAGE_TABLE}(Min_Date);
+
+        CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_max_date
+        ON {PAGE_TABLE}(Max_Date);
+    """, autocommit=True)
+# 20260104_004 <<
 
 def get_max_page():
     # 用同步requests抓，這段 async 省不了多少
@@ -542,13 +608,13 @@ with DAG(
 
     )
 
-    swap = PythonOperator(
+    insert = PythonOperator(
         task_id='swap_tables',
-        python_callable=swap_tables,
+        python_callable=insert_into_formal_tables,
     )
 
     clear_redis = PythonOperator(
         task_id='clear_redis_keys',
         python_callable=clear_redis_keys,
     )
-    clear_redis >> prepare_temp >> gen_batches >> process_batches >> swap # 20251207_002
+    clear_redis >> prepare_temp >> gen_batches >> process_batches >> insert # 20251207_002
