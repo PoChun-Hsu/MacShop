@@ -171,6 +171,8 @@ def prepare_temp_table():
 # 有用到 await 就需要在宣告 function 時加上 async
 # 在宣告，例如 task = fetch_ptt_page_async(session, 10)，時不會真的執行
 # 直到 await fetch_ptt_page_async(session, 10) 才真的執行ㄒ
+from aiohttp import ClientError
+
 async def fetch_ptt_page_async(session, page_num):
     # 20250709_001 >>
     # Redis：檢查全局 ban flag
@@ -200,10 +202,26 @@ async def fetch_ptt_page_async(session, page_num):
         # 403: IP 太頻繁被當作 DDOS，User Agent有問題，被反爬蟲機制擋住
         # 429: 高併發，一次抓太多頁，短時間太多 request，暫時被 ban
         # over18: PTT要勾已年滿１８歲，需要有 over 18的 cookie
-        if resp.status in (403, 429) or 'over18' in html:
-            # ban 狀態持續 30秒
-            redis_client.set("ptt:ban_flag", "1", ex=30) # 20250709_001 
-            raise Exception(f"被Ban/驗證，status:{resp.status}")
+        # if resp.status in (403, 429) or 'over18' in html:
+        #     # ban 狀態持續 30秒
+        #     redis_client.set("ptt:ban_flag", "1", ex=30) # 20250709_001 
+        #     raise Exception(f"被Ban/驗證，status:{resp.status}")
+        for attempt in range(3):
+            try:
+                async with session.get(url, cookies=cookies, headers=headers, timeout=10) as resp:
+                    html = await resp.text()
+
+                    if resp.status in (403, 429) or 'over18' in html:
+                        # ban 狀態持續 30秒
+                        redis_client.set("ptt:ban_flag", "1", ex=30)
+                        raise Exception(f"被Ban/驗證，status:{resp.status}")
+
+                    break  # 成功拿到 html 就跳出 retry loop
+
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(2 ** attempt)
         
         # 最常用 HTML套件，有廣大社群
         # <div class="r-ent">
@@ -247,43 +265,57 @@ async def fetch_ptt_page_async(session, page_num):
                     # 使用不同的 header帶入不同裝置，等隨機幾秒後開始從網址抓內容
                     art_headers = {"User-Agent": random.choice(USER_AGENTS)}
                     await asyncio.sleep(random.uniform(0.1, 0.4))
-                    async with session.get(link, cookies=cookies, headers=art_headers, timeout=10) as art_resp:
-                        # PTT文章結構如下，因此要有第四個 meta-tag才會有發文日期時間
-                        # <span class="article-meta-tag">作者</span>
-                        # <span class="article-meta-value">appleboy</span>
+                    # PTT文章結構如下，因此要有第四個 meta-tag才會有發文日期時間
+                    # <span class="article-meta-tag">作者</span>
+                    # <span class="article-meta-value">appleboy</span>
 
-                        # <span class="article-meta-tag">看板</span>
-                        # <span class="article-meta-value">MacShop</span>
+                    # <span class="article-meta-tag">看板</span>
+                    # <span class="article-meta-value">MacShop</span>
 
-                        # <span class="article-meta-tag">標題</span>
-                        # <span class="article-meta-value">[賣/台北] Mac mini</span>
+                    # <span class="article-meta-tag">標題</span>
+                    # <span class="article-meta-value">[賣/台北] Mac mini</span>
 
-                        # <span class="article-meta-tag">時間</span>
-                        # <span class="article-meta-value">Thu Dec 5 10:27:43 2024</span>
+                    # <span class="article-meta-tag">時間</span>
+                    # <span class="article-meta-value">Thu Dec 5 10:27:43 2024</span>
 
                         
-                        art_html = await art_resp.text()
-                        art_soup = BeautifulSoup(art_html, "html.parser")
-                        meta_values = art_soup.select('span.article-meta-value')
-                        if len(meta_values) >= 4:
-                            date_str = meta_values[3].text.strip()
-                            date = parse_full_datetime(date_str)
+                    art_html = None
 
-                        # 20250708_002 >>
-                        # 取得文章主體內容
-                        content_div = art_soup.select_one("#main-content")
-                        description = content_div.get_text(separator="\n", strip=True) if content_div else None
-                        # 20250708_002 <<
+                    for attempt in range(3):
+                        try:
+                            async with session.get(link, cookies=cookies, headers=art_headers, timeout=10) as art_resp:
+                                art_html = await art_resp.text()
+                            break  # 成功就離開 retry
+                        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                            if attempt == 2:
+                                print(f"[WARN] article fetch failed, skip link: {link}")
+                            await asyncio.sleep(2 ** attempt)
 
-                        # 20250717_003 >>
-                        # 這個在 full Sync 用不到
-                        # 在 Incremental Sync時，可以用來快速判斷內文是否有更新過，沒更新過的話結果會一致，就跳過
-                        # 反之不一致就要更新
-                        description_hash = (
-                            hashlib.sha256(description.encode("utf-8")).hexdigest()
-                            if description else None
-                        )
-                        # 20250717_003 <<
+                    # 如果三次都失敗，直接跳過這篇文章
+                    if not art_html:
+                        continue
+                        
+                    art_soup = BeautifulSoup(art_html, "html.parser")
+                    meta_values = art_soup.select('span.article-meta-value')
+                    if len(meta_values) >= 4:
+                        date_str = meta_values[3].text.strip()
+                        date = parse_full_datetime(date_str)
+
+                    # 20250708_002 >>
+                    # 取得文章主體內容
+                    content_div = art_soup.select_one("#main-content")
+                    description = content_div.get_text(separator="\n", strip=True) if content_div else None
+                    # 20250708_002 <<
+
+                    # 20250717_003 >>
+                    # 這個在 full Sync 用不到
+                    # 在 Incremental Sync時，可以用來快速判斷內文是否有更新過，沒更新過的話結果會一致，就跳過
+                    # 反之不一致就要更新
+                    description_hash = (
+                        hashlib.sha256(description.encode("utf-8")).hexdigest()
+                        if description else None
+                    )
+                    # 20250717_003 <<
 
                 # 20250709_001
                 # ✅ Redis：標記這篇文章已經爬過（加入 Set）
@@ -302,7 +334,7 @@ async def fetch_ptt_page_async(session, page_num):
             except Exception as e:
                 print(f"Error parsing entry: {e}")
                 print(traceback.format_exc())
-                raise e  # 一定要 re-raise
+                # raise e  # 一定要 re-raise # 20260104_001 
                 continue
             
         # 20250717_002 >>
