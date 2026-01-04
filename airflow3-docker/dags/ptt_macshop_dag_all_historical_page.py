@@ -465,44 +465,83 @@ def load_articles_to_temp(**context):
 # 1. 把 fromal table改成 _backup table
 # 2. 把 _temp table改成 formal table
 # 3. 把 _backup table刪除
-def swap_tables():
+def insert_into_formal_tables():
     pg_hook = PostgresHook(postgres_conn_id='postgres_default')
-    # 如果 backup 存在，先刪掉
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Articles_Backup;", autocommit=True)
-    # 如果正式表存在，rename 成 backup
-    result = pg_hook.get_first("""
-        SELECT to_regclass('public.Ptt_Macshop_Articles') IS NOT NULL;
-    """)
-    if result and result[0]:
-        pg_hook.run("ALTER TABLE Ptt_Macshop_Articles RENAME TO Ptt_Macshop_Articles_Backup;", autocommit=True)
-    # temp rename to 正式表
-    pg_hook.run("ALTER TABLE Ptt_Macshop_Articles_Temp RENAME TO Ptt_Macshop_Articles;", autocommit=True)
-    
-    pg_hook.run("CREATE INDEX IF NOT EXISTS idx_description_hash ON Ptt_Macshop_Articles(Description_Hash);", autocommit=True) # 20250717_003
+# ===============================
+    # Articles
+    # ===============================
+    pg_hook.run("""
+        BEGIN;
 
-    # 刪除 backup
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Articles_Backup;", autocommit=True)
+        -- 1️⃣ 清空正式表（保留 table / index / sequence）
+        TRUNCATE TABLE Ptt_Macshop_Articles;
 
-    # 20250717_002 >>
-    # 如果 backup 存在，先刪掉
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
-    # 如果正式表存在，rename 成 backup
-    result = pg_hook.get_first("""
-        SELECT to_regclass('public.Ptt_Macshop_Page_Dates') IS NOT NULL;
-    """)
-    if result and result[0]:
-        pg_hook.run("ALTER TABLE Ptt_Macshop_Page_Dates RENAME TO Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
-    # temp rename to 正式表
-    pg_hook.run("ALTER TABLE Ptt_Macshop_Page_Dates_Temp RENAME TO Ptt_Macshop_Page_Dates;", autocommit=True)
-    # 刪除 backup
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Backup;", autocommit=True)
+        -- 2️⃣ 將 temp 資料寫入正式表
+        INSERT INTO Ptt_Macshop_Articles (
+            Title,
+            Author,
+            Created_Date,
+            Link,
+            Description,
+            Description_Hash,
+            Updated_Date
+        )
+        SELECT
+            Title,
+            Author,
+            Created_Date,
+            Link,
+            Description,
+            Description_Hash,
+            Updated_Date
+        FROM Ptt_Macshop_Articles_Temp;
 
-    create_page_dates_index_sql = """
-    CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_min_date ON Ptt_Macshop_Page_Dates(Min_Date);
-    CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_max_date ON Ptt_Macshop_Page_Dates(Max_Date);
-    """
-    pg_hook.run(create_page_dates_index_sql, autocommit=True)
-    # 20250717_002 <<
+        -- 3️⃣ 刪掉 temp table（只刪 temp，安全）
+        DROP TABLE IF EXISTS Ptt_Macshop_Articles_Temp;
+
+        COMMIT;
+    """, autocommit=True)
+
+    # index 保險（即使已存在也不影響）
+    pg_hook.run("""
+        CREATE INDEX IF NOT EXISTS idx_description_hash
+        ON Ptt_Macshop_Articles(Description_Hash);
+    """, autocommit=True)
+
+    # ===============================
+    # Page Dates
+    # ===============================
+    pg_hook.run("""
+        BEGIN;
+
+        TRUNCATE TABLE Ptt_Macshop_Page_Dates;
+
+        INSERT INTO Ptt_Macshop_Page_Dates (
+            Page_Num,
+            Url,
+            Min_Date,
+            Max_Date
+        )
+        SELECT
+            Page_Num,
+            Url,
+            Min_Date,
+            Max_Date
+        FROM Ptt_Macshop_Page_Dates_Temp;
+
+        DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Temp;
+
+        COMMIT;
+    """, autocommit=True)
+
+    # index 保險
+    pg_hook.run("""
+        CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_min_date
+        ON Ptt_Macshop_Page_Dates(Min_Date);
+
+        CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_max_date
+        ON Ptt_Macshop_Page_Dates(Max_Date);
+    """, autocommit=True)
 
 def get_max_page():
     # 用同步requests抓，這段 async 省不了多少
@@ -574,13 +613,13 @@ with DAG(
 
     )
 
-    swap = PythonOperator(
+    insert = PythonOperator(
         task_id='swap_tables',
-        python_callable=swap_tables,
+        python_callable=insert_into_formal_tables,
     )
 
     clear_redis = PythonOperator(
         task_id='clear_redis_keys',
         python_callable=clear_redis_keys,
     )
-    clear_redis >> prepare_temp >> gen_batches >> process_batches >> swap # 20251207_002
+    clear_redis >> prepare_temp >> gen_batches >> process_batches >> insert # 20251207_002
