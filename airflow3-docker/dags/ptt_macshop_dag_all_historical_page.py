@@ -36,6 +36,8 @@ DEFAULT_START_DATE = datetime(2025, 5, 1)
 BATCH_SIZE = 100      # 20250702_002
 # 控制最大 thread 數，建議不要超過 5~10，避免被 ban
 CONCURRENT_SIZE = 10 # 20250702_001
+ARTICLE_TABLE = 'Ptt_Macshop_Articles'
+PAGE_TABLE    = 'Ptt_Macshop_Page_Dates'
 
 # 20250703_001 >>
 # 定義多種設備，避免被判定成機器人，更像不同使用者
@@ -104,9 +106,9 @@ def prepare_temp_table():
     
     # 建構 Article相關 tables 
     # 如果 temp table 已存在就刪除，確保 temp table是空的
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Articles_Temp;", autocommit=True)
-    create_articles_temp_table_sql = """
-    CREATE TABLE Ptt_Macshop_Articles_Temp (
+    pg_hook.run(f"DROP TABLE IF EXISTS {ARTICLE_TABLE}_Temp;", autocommit=True)
+    create_articles_temp_table_sql = f"""
+    CREATE TABLE {ARTICLE_TABLE}_Temp (
         Id SERIAL PRIMARY KEY,
         Title TEXT,
         Author TEXT,
@@ -122,8 +124,8 @@ def prepare_temp_table():
 
     # 20250717_001 >>
     # 如果 formal table 不存在要創建，已存在就保留
-    create_articles_table_sql = """
-        CREATE TABLE IF NOT EXISTS Ptt_Macshop_Articles (
+    create_articles_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS {ARTICLE_TABLE} (
             Id SERIAL PRIMARY KEY,
             Title TEXT,
             Author TEXT,
@@ -141,9 +143,9 @@ def prepare_temp_table():
     #20250717_002 >>
     # 建構 Ptt 每一頁對應的最小最大日期相關 tables 
     # 如果 temp table 已存在就刪除，確保 temp table是空的
-    pg_hook.run("DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Temp;", autocommit=True)
-    create_page_dates_temp_table_sql = """
-        CREATE TABLE IF NOT EXISTS Ptt_Macshop_Page_Dates_Temp (
+    pg_hook.run(f"DROP TABLE IF EXISTS {PAGE_TABLE}_Temp;", autocommit=True)
+    create_page_dates_temp_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS {PAGE_TABLE}_Temp (
             Page_Num INTEGER PRIMARY KEY,
             Url TEXT,
             Min_Date TIMESTAMP,
@@ -155,8 +157,8 @@ def prepare_temp_table():
 
 
     # 如果 formal table 不存在要創建，已存在就保留
-    create_page_dates_table_sql = """
-        CREATE TABLE IF NOT EXISTS Ptt_Macshop_Page_Dates (
+    create_page_dates_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS {PAGE_TABLE} (
             Page_Num INTEGER PRIMARY KEY,
             Url TEXT,
             Min_Date TIMESTAMP,
@@ -348,8 +350,8 @@ async def fetch_ptt_page_async(session, page_num):
 
                 pg_hook = PostgresHook(postgres_conn_id="postgres_default")
                 pg_hook.run(
-                    """
-                    INSERT INTO ptt_macshop_page_dates_temp (Page_Num, Url, Min_date, Max_date)
+                    f"""
+                    INSERT INTO {PAGE_TABLE}_temp (Page_Num, Url, Min_date, Max_date)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (Page_Num) DO UPDATE
                     SET Min_Date = EXCLUDED.Min_Date,
@@ -376,10 +378,15 @@ async def async_extract_articles_batch(start_page, end_page, concurrent=CONCURRE
                 # 等到第一個的 page_articles
                 page_articles = await future
                 articles.extend(page_articles)
+            except aiohttp.ClientConnectorError as e:
+                print(f"[WARN] Connection error, skip one page: {e}")
+                continue
+
             except Exception as e:
-                print(f"[Async error] {e}")
+                # 只有「你明確想中斷 DAG」的錯，才 raise
+                print(f"[ERROR] Unexpected error: {e}")
                 print(traceback.format_exc())
-                raise e  # 一定要 re-raise
+                raise
     return articles
 # 20250708_001 <<
 
@@ -411,7 +418,7 @@ def load_articles_to_temp(**context):
         for article in articles
     ]
     pg_hook.insert_rows(
-        table="Ptt_Macshop_Articles_Temp",
+        table=f"{ARTICLE_TABLE}_Temp",
         rows=rows,
         target_fields=[
             "Title",
@@ -470,14 +477,14 @@ def insert_into_formal_tables():
 # ===============================
     # Articles
     # ===============================
-    pg_hook.run("""
+    pg_hook.run(f"""
         BEGIN;
 
         -- 1️⃣ 清空正式表（保留 table / index / sequence）
-        TRUNCATE TABLE Ptt_Macshop_Articles;
+        TRUNCATE TABLE {ARTICLE_TABLE};
 
         -- 2️⃣ 將 temp 資料寫入正式表
-        INSERT INTO Ptt_Macshop_Articles (
+        INSERT INTO {ARTICLE_TABLE} (
             Title,
             Author,
             Created_Date,
@@ -494,29 +501,29 @@ def insert_into_formal_tables():
             Description,
             Description_Hash,
             Updated_Date
-        FROM Ptt_Macshop_Articles_Temp;
+        FROM {ARTICLE_TABLE}_Temp;
 
         -- 3️⃣ 刪掉 temp table（只刪 temp，安全）
-        DROP TABLE IF EXISTS Ptt_Macshop_Articles_Temp;
+        DROP TABLE IF EXISTS {ARTICLE_TABLE}_Temp;
 
         COMMIT;
     """, autocommit=True)
 
     # index 保險（即使已存在也不影響）
-    pg_hook.run("""
+    pg_hook.run(f"""
         CREATE INDEX IF NOT EXISTS idx_description_hash
-        ON Ptt_Macshop_Articles(Description_Hash);
+        ON {ARTICLE_TABLE}(Description_Hash);
     """, autocommit=True)
 
     # ===============================
     # Page Dates
     # ===============================
-    pg_hook.run("""
+    pg_hook.run(f"""
         BEGIN;
 
-        TRUNCATE TABLE Ptt_Macshop_Page_Dates;
+        TRUNCATE TABLE {PAGE_TABLE};
 
-        INSERT INTO Ptt_Macshop_Page_Dates (
+        INSERT INTO {PAGE_TABLE} (
             Page_Num,
             Url,
             Min_Date,
@@ -527,20 +534,20 @@ def insert_into_formal_tables():
             Url,
             Min_Date,
             Max_Date
-        FROM Ptt_Macshop_Page_Dates_Temp;
+        FROM {PAGE_TABLE}_Temp;
 
-        DROP TABLE IF EXISTS Ptt_Macshop_Page_Dates_Temp;
+        DROP TABLE IF EXISTS {PAGE_TABLE}_Temp;
 
         COMMIT;
     """, autocommit=True)
 
     # index 保險
-    pg_hook.run("""
+    pg_hook.run(f"""
         CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_min_date
-        ON Ptt_Macshop_Page_Dates(Min_Date);
+        ON {PAGE_TABLE}(Min_Date);
 
         CREATE INDEX IF NOT EXISTS idx_macshop_page_dates_max_date
-        ON Ptt_Macshop_Page_Dates(Max_Date);
+        ON {PAGE_TABLE}(Max_Date);
     """, autocommit=True)
 
 def get_max_page():
