@@ -18,7 +18,7 @@
 # 20260104_002 - PoChun Hsu - [Add]    Retry.
 # 20260104_003 - PoChun Hsu - [Drop]   raise error message. Prevent process terminate by error.
 # 20260104_004 - PoChun Hsu - [Alter]  Truncate table than insert. Prevent delete formal table than rename.
---------------------------------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------------------------------
 # 20260104_000 - PoChun Hsu - [Create] Incremental Version
 # 20260104_005 - PoChun Hsu - [Create] Get start page number for updating.
 # 20260104_006 - PoChun Hsu - [Alter]  Upsert. Insert if not exist. Update if exist.
@@ -558,8 +558,9 @@ def get_incremental_start_page():
 with DAG(
     "Ptt_Macshop_Incremental_Async",
     default_args=default_args,
-    schedule=None,  # 20250724_003
+    schedule="*/15 * * * *",
     catchup=False,
+    max_active_runs=1,
     tags=["ptt", "macshop", "postgres"],
 ) as dag:
 
