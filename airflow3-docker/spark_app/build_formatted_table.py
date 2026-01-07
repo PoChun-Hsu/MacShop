@@ -82,6 +82,17 @@ def read_source() -> DataFrame:
         .select("title", "created_date", "link", "description")
     )
 
+# =========================================================
+# helper
+# =========================================================
+# 清除前後空白 + 文字中所有空白與換行
+def clean_wording(col_expr):
+    return regexp_replace(
+        trim(col_expr),
+        r"[\s\r\n]+",
+        "",
+    )
+
 # 判斷是買還是賣
 # 標題中有 [販售] or [徵求]，可以快速分類，96%以上資料都可以分出來
 # Regular Expression細節
@@ -185,23 +196,55 @@ def extract_sections(df: DataFrame) -> DataFrame:
     return (
         df.withColumn(
             "model_raw",
-            when(should_parse_content,
-                 trim(regexp_extract(content, r"\[型號\]\s*([^\n\r]+)", 1))),
+            when(
+                should_parse_content,
+                clean_wording(
+                    regexp_extract(
+                        content,
+                        r"\[型號\]([\s\S]*?)\[規格\]",
+                        1,
+                    )
+                ),
+            ),
         )
         .withColumn(
             "spec_raw",
-            when(should_parse_content,
-                 trim(regexp_extract(content, r"\[規格\]\s*([^\n\r]+)", 1))),
+            when(
+                should_parse_content,
+                clean_wording(
+                    regexp_extract(
+                        content,
+                        r"\[規格\]([\s\S]*?)\[保固\]",
+                        1,
+                    )
+                ),
+            ),
         )
         .withColumn(
             "warranty_raw",
-            when(should_parse_content,
-                 trim(regexp_extract(content, r"\[保固\]\s*([^\n\r]+)", 1))),
+            when(
+                should_parse_content,
+                clean_wording(
+                    regexp_extract(
+                        content,
+                        r"\[保固\]([\s\S]*?)\[盒裝配件\]",
+                        1,
+                    )
+                ),
+            ),
         )
         .withColumn(
             "price_raw",
-            when(should_parse_content,
-                 trim(regexp_extract(content, r"\[售價\]\s*([^\n\r]+)", 1))),
+            when(
+                should_parse_content,
+                clean_wording(
+                    regexp_extract(
+                        content,
+                        r"\[售價\]([\s\S]*?)\[交易方式/地點\]",
+                        1,
+                    )
+                ),
+            ),
         )
     )
 
@@ -230,8 +273,8 @@ def parse_product_fields(df: DataFrame) -> DataFrame:
             .when(lower(col("model_raw")).contains("airpod"), "AirPods")
             .when(lower(col("model_raw")).contains("mac"), "Mac")
             .when(lower(col("model_raw")).contains("pencil"), "Apple Pencil")
-            .when(lower(col("model_raw")).contains("apple tv"), "Apple TV")
-            .when(lower(col("model_raw")).contains("apple watch"), "Apple Watch")
+            .when(lower(col("model_raw")).contains("appletv"), "Apple TV")
+            .when(lower(col("model_raw")).contains("applewatch"), "Apple Watch")
             .when(lower(col("model_raw")).contains("homepod"), "HomePod")
             .when(lower(col("model_raw")).contains("earpod"), "EarPods")
             .when(lower(col("model_raw")).contains("airtag"), "AirTag")
@@ -245,9 +288,12 @@ def parse_product_fields(df: DataFrame) -> DataFrame:
         )
         .withColumn(
             "model_variant",
-            when(should_parse_content,
-                 regexp_extract(lower(col("model_raw")),
-                                r"(pro max|pro|plus| air |mini)", 1)),
+            when(~should_parse_content, lit(None))
+            # AirPods：只抓 pro / max（避免 airpods -> air）
+            .when(col("product_type") == "AirPods",
+                  regexp_extract(lower(col("model_raw")), r"(pro|max)", 1))
+            # 其他：維持你原本的 variant 規則（air 不會影響 airpods 了）
+            .otherwise(regexp_extract(lower(col("model_raw")), r"(promax|pro|plus|air|mini)", 1)),
         )
         .withColumn(
             "is_warranty_valid",
