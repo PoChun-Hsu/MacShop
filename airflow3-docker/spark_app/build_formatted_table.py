@@ -1,4 +1,6 @@
 # 20260105_001 - PoChun Hsu - [Add]     New Version.
+# 20260110_001 - PoChun Hsu - [Add]     Batch size and bulk insert. 
+# 20260110_002 - PoChun Hsu - [Add]     Add partition to increase connection and decrease insert quantity.
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
@@ -436,7 +438,7 @@ def write_to_postgres(df: DataFrame):
     # 1 個 partition，等於一次寫入全部資料（約8萬筆）
     # 8 個 partition可以分成 8個 connection來寫入
 
-    final_df = final_df.repartition(8) # 20260110_001
+    final_df = final_df.repartition(8) # 20260110_002
 
     final_df.write.jdbc(
         url=jdbc_url,
