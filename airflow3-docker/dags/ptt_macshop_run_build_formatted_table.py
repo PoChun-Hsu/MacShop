@@ -11,6 +11,8 @@
 
 # 20251010_001 - PoChun Hsu - [Add]     Dataset for trigger across DAGs.
 # 20251213_001 - PoChun Hsu - [Add]     Jobs for turn on/off Spark. Based on practical experience, starting the Spark service only when executing a Spark job results in a higher success rate.
+# 20260110_001 - PoChun Hsu - [Alter]   Stop Spark service no matter job fail or success  
+
 from __future__ import annotations
 import pendulum
 from datetime import timedelta
@@ -237,7 +239,7 @@ with DAG(
         ],
         mount_tmp_dir=False,
         auto_remove="force",
-        trigger_rule=TriggerRule.ALL_DONE,
+        trigger_rule=TriggerRule.ALL_DONE, # 20260110_001
     )
     # 20251213_001 <<
 
