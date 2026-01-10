@@ -1,473 +1,289 @@
-# 20260105_001 - PoChun Hsu - [Add]     New Version.
-# 20260110_001 - PoChun Hsu - [Add]     Batch size and bulk insert. 
-# 20260110_002 - PoChun Hsu - [Add]     Add partition to increase connection and decrease insert quantity.
+# -*- coding: utf-8 -*-
+# DAG: trigger_build_formatted_table_2
+# 需求重點：
+# 1) 由 Dataset(dataset://ptt_macshop/raw_updated) 觸發
+# 2) 手動觸發時可略過 debounce（避免 up_for_reschedule）
+# 3) 正確處理 Branch，不讓 build_formatted_table 被誤判 skipped
+# 4) build_formatted_table 受 Pool 控制：ptt_formatted_build_pool
+# 5) 可用 Trigger DAG 時傳入 conf 覆寫行為：
+#    - {"skip_debounce": true} 手動跳過等待
+#    - {"debounce_seconds": 0} 或其他秒數，覆寫等待時間
 
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import (
-    col,
-    regexp_extract,
-    regexp_replace,
-    lower,
-    when,
-    lit,
-    trim,
-    length,
-)
-from pyspark.sql.types import IntegerType, BooleanType
+# 20251010_001 - PoChun Hsu - [Add]     Dataset for trigger across DAGs.
+# 20251213_001 - PoChun Hsu - [Add]     Jobs for turn on/off Spark. Based on practical experience, starting the Spark service only when executing a Spark job results in a higher success rate.
+# 20260110_001 - PoChun Hsu - [Alter]   Stop Spark service no matter job fail or success  
 
-# =========================================================
-# Logging & Guard
-# =========================================================
-import logging
+from __future__ import annotations
+import pendulum
+from datetime import timedelta
 
-logging.basicConfig(
-    level=logging.WARNING,  # silence root / spark logs
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+from airflow import DAG
+from airflow.datasets import Dataset
+from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.providers.standard.operators.bash import BashOperator
+from airflow.providers.standard.operators.latest_only import LatestOnlyOperator
+from airflow.providers.standard.operators.python import BranchPythonOperator, PythonOperator
+from airflow.providers.standard.sensors.time_delta import TimeDeltaSensor
+from airflow.task.trigger_rule import TriggerRule
 
-logging.getLogger("py4j").setLevel(logging.ERROR) # 關掉 py4j error message
-
-logger = logging.getLogger("ptt-macshop")
-logger.setLevel(logging.INFO)
-
-
-def guard(msg: str, fn, *, action: bool = False):
-    """
-    Run fn() with structured logging.
-    If action=True and fn returns DataFrame, trigger Spark action early.
-    """
-    logger.info(f"▶ [STEP] START {msg}")
-    try:
-        result = fn()
-
-        if action and isinstance(result, DataFrame):
-            logger.info(f"[STEP] Trigger Spark action for: {msg}")
-            result.count()
-
-        logger.info(f"✅ [STEP] SUCCESS {msg}")
-        return result
-    except Exception:
-        logger.exception(f"❌ [STEP] FAILED {msg}")
-        raise
+# from airflow.providers.standard.operators.bash import BashOperator  # :contentReference[oaicite:0]{index=0}
+from airflow.utils.trigger_rule import TriggerRule
 
 
-# =========================================================
-# Spark & JDBC Config
-# =========================================================
-spark = (
-    SparkSession.builder
-    .appName("PTT_Macshop_Product_Detail_v1_guard")
-    .getOrCreate()
-)
-spark.sparkContext.setLogLevel("WARN") # 只顯示 WARN等級以上的 log, INFO不顯示
+FORMATTED_UPDATED = Dataset("dataset://ptt_macshop/formatted_updated") # 20251010_001
 
-jdbc_url = "jdbc:postgresql://postgres:5432/airflow?currentSchema=public"
-src_table = "public.ptt_macshop_articles"
-dest_table = "ptt_macshop_articles_product_detail"
+# --------------------------
+# 基本設定
+# --------------------------
+DAG_ID = "trigger_build_formatted_table"
+# Dataset 來源
+RAW_UPDATED = Dataset("dataset://ptt_macshop/raw_updated")
 
-# rewriteBatchedInserts把多個 Insert改成一整包 insert
-# -- 原本（慢）
-# INSERT INTO t VALUES (...);
-# INSERT INTO t VALUES (...);
-# -- 改寫後（快）
-# INSERT INTO t VALUES (...), (...), (...);
+# 預設 debounce 秒數（Dataset 觸發時避免過度頻繁重建）
+DEFAULT_DEBOUNCE_SECONDS = 90
 
-# 業界實務一個 batch約 500 ~ 2000
-jdbc_props = {
-    "user": "airflow",
-    "password": "airflow",
-    "driver": "org.postgresql.Driver",
-    "batchsize": "1000",               # 20260110_001 
-    #"rewriteBatchedInserts": "true",   # 20260110_001
-}
+# Spark submit 指令（依你提供的語法）
+SPARK_SUBMIT_CMD = "docker exec spark spark-submit --packages org.postgresql:postgresql:42.7.3 /opt/spark-apps/build_formatted_table.py"
+
+# Airflow Pool 名稱（請確保已建立）
+POOL_NAME = "ptt_formatted_build_pool"
 
 
-# =========================================================
-# Phase Functions
-# =========================================================
-def read_source() -> DataFrame:
-    return (
-        spark.read.jdbc(jdbc_url, src_table, properties=jdbc_props)
-        .select("title", "created_date", "link", "description")
+# --------------------------
+# DAG 宣告
+# --------------------------
+with DAG(
+    dag_id=DAG_ID,
+    description="Dataset-driven trigger to build formatted table (PTT MacShop)",
+    schedule=[RAW_UPDATED],             # 由 dataset 觸發
+    start_date=pendulum.datetime(2025, 1, 1, tz="Asia/Taipei"),
+    catchup=False,                      # 只跑最新一次
+    max_active_runs=1,                  # 避免重入
+    tags=["dataset-driven", "formatted_table", "ptt_macshop"],
+) as dag:
+
+    # 僅讓「最新一次」生效（對 backfill/補跑會 skip；手動不受影響）
+    latest_only = LatestOnlyOperator(task_id="latest_only")
+
+    # 決定是否略過 debounce：
+    # - 手動觸發（run_type == "manual"）或 conf={"skip_debounce": true} → 走 go_build
+    # - 其餘（包含 Dataset 觸發） → 走 debounce 等待一段時間再建表
+    def pick_next(**ctx) -> str:
+        dag_run = ctx["dag_run"]
+        conf = (dag_run.conf or {})
+        manual_run = (dag_run.run_type == "manual")
+        skip_debounce = bool(conf.get("skip_debounce", False))
+
+        if manual_run or skip_debounce:
+            target = "go_build"
+        else:
+            target = "debounce"
+
+        # 立刻驗證：回傳目標必須是本節點的直接下游（避免「全 skipped」）
+        downstream = ctx["task"].downstream_task_ids
+        assert target in downstream, f"Branch target '{target}' is not a direct downstream: {downstream}"
+        return target
+
+    branch_on_manual = BranchPythonOperator(
+        task_id="branch_on_manual",
+        python_callable=pick_next,
+            # [AF3 MIGRATION] provide_context removed; context auto-injected
+
+        doc_md="""
+        ### Branch 邏輯
+        - 手動觸發或 `{"skip_debounce": true}` → go_build
+        - 其他（Dataset 觸發） → debounce
+        """,
     )
 
-# =========================================================
-# helper
-# =========================================================
-# 清除前後空白 + 文字中所有空白與換行
-def clean_wording(col_expr):
-    return regexp_replace(
-        trim(col_expr),
-        r"[\s\r\n]+",
-        "",
+    # 直接開建表（手動觸發或明確要求略過 debounce）
+    go_build = EmptyOperator(task_id="go_build")
+
+    # 等待一段時間，避免 Dataset 短時間觸發多次
+    # Mode 使用 reschedule：不佔住 worker slot，但外觀會看到 up_for_reschedule（合理）
+    from airflow.operators.python import PythonOperator
+    import time
+
+    def do_debounce(**ctx):
+        conf = ctx["dag_run"].conf or {}
+        sec = int(conf.get("debounce_seconds", DEFAULT_DEBOUNCE_SECONDS))
+        time.sleep(sec)  # 直接 sleep，等同於 debounce 效果
+
+    debounce = PythonOperator(
+        task_id="debounce",
+        python_callable=do_debounce,
     )
 
-# 判斷是買還是賣
-# 標題中有 [販售] or [徵求]，可以快速分類，96%以上資料都可以分出來
-# Regular Expression細節
-# 0 → 整個被 regex match 到的字串
-# 1 → 第一個括號 () 裡面 match 到的內容
-# 沒 match → 回傳空字串 ""
-def derive_trade_type(df: DataFrame) -> DataFrame:
-    title = col("title")
+    # 20251213_001 >>
+    from datetime import datetime
+    from airflow.providers.docker.operators.docker import DockerOperator
+    from docker.types import Mount
 
-    SELL_PATTERN      = r"^\[(販售|售出|已售|已售出)\]"
-    BUY_PATTERN       = r"^\[徵求\]"
-    EXCHANGE_PATTERN  = r"^\[交換\]"
+    HOST_PROJECT_PATH = "/Users/sherryli/Desktop/MacShop/airflow3-docker"
 
-    return df.withColumn(
-        "trade_type",
-        when(title.rlike(SELL_PATTERN), lit("sell"))
-        .when(title.rlike(BUY_PATTERN), lit("buy"))
-        .when(title.rlike(EXCHANGE_PATTERN), lit("exchange"))
-        .otherwise(lit("unknown")),
-    )
-    # return df.filter(col("trade_type") != "unknown")
-
-# 如果是公告文，警告文，不需要判斷商品內容，直接略過
-def apply_announcement_guard(df: DataFrame) -> DataFrame:
-    content = col("title")
-    ANNOUNCEMENT_PATTERN = (
-        r"\[公告\]"
-        r"|\[版主\]"
-        r"|\[板主\]"
-        r"|\[心得\]"
-        r"|\[情報\]"
-        r"|\[黑名\]"
-        r"|黑名單"
-        r"|警告"
-        r"|\[建議\]"
-    )
-
-    return (
-        df.withColumn(
-            "is_announcement",
-            content.rlike(ANNOUNCEMENT_PATTERN)
-        )
-        .withColumn("is_announcement", col("is_announcement").cast(BooleanType()))
-    )
-
-
-# 一篇文章是否多個商品
-# 多個商品需要特殊處理
-# 判斷方式：
-# 1. 型號中有 1.xxx 2.yyy
-# 2. 售價中有 1.xxx 2.yyy
-# 3. 內文中$出現超過 2次，這個條件相對強烈，但寧枉勿縱
-# 如果是多個商品的情況下，後續都不處理
-def apply_multi_product_guard(df: DataFrame) -> DataFrame:
-    content = col("description")
-
-    # 擷取區塊文字
-    model_block = regexp_extract(
-        content,
-        r"\[型號\]([\s\S]*?)\[規格\]",
-        1,
-    )
-
-    price_block = regexp_extract(
-        content,
-        r"\[售價\]([\s\S]*?)\[交易方式/地點\]",
-        1,
-    )
-
-    return (
-        df.withColumn(
-            "is_multi_product",
-            when(
-                model_block.rlike(r"(?:^|\n)\s*[1-9]\."),
-                lit(True),
-            )
-            .when(
-                price_block.rlike(r"(?:^|\n)\s*[1-9]\."),
-                lit(True),
-            )
-            .when(
-                length(regexp_replace(price_block, r"[^\$]", "")) >= 2,
-                lit(True),
-            )
-            .otherwise(lit(False)),
-        )
-        .withColumn("is_multi_product", col("is_multi_product").cast(BooleanType()))
-    )
-
-# 從內文特定區快擷取文字
-# 目前不跨行，待修正
-def extract_sections(df: DataFrame) -> DataFrame:
-    content = col("description")
-    should_parse_content = ( 
-        ~col("is_multi_product") 
-        & ~col("is_announcement") 
-        & col("trade_type").isin(["sell", "buy"]) 
-    )
-
- 
-    return (
-        df.withColumn(
-            "model_raw",
-            when(
-                should_parse_content,
-                clean_wording(
-                    regexp_extract(
-                        content,
-                        r"\[型號\]([\s\S]*?)\[規格\]",
-                        1,
-                    )
-                ),
+    stop_spark_services = DockerOperator(
+        task_id="docker_compose_stop_spark",
+        container_name="airflow-compose-stop-spark",
+        image="docker:27.1.1-cli",
+        docker_url="unix://var/run/docker.sock",
+        working_dir=HOST_PROJECT_PATH,
+        command=[
+            "docker",
+            "compose",
+            "-f",
+            "docker-compose.yaml",
+            "stop",
+            "spark",
+            "spark-worker",
+            "spark-history",
+        ],
+        mounts=[
+            Mount(
+                source="/var/run/docker.sock",
+                target="/var/run/docker.sock",
+                type="bind",
             ),
-        )
-        .withColumn(
-            "spec_raw",
-            when(
-                should_parse_content,
-                clean_wording(
-                    regexp_extract(
-                        content,
-                        r"\[規格\]([\s\S]*?)\[保固\]",
-                        1,
-                    )
-                ),
+            Mount(
+                source=HOST_PROJECT_PATH,
+                target=HOST_PROJECT_PATH,
+                type="bind",
             ),
-        )
-        .withColumn(
-            "warranty_raw",
-            when(
-                should_parse_content,
-                clean_wording(
-                    regexp_extract(
-                        content,
-                        r"\[保固\]([\s\S]*?)\[盒裝配件\]",
-                        1,
-                    )
-                ),
+        ],
+        mount_tmp_dir=False,
+        auto_remove="force",
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+    )
+
+    from datetime import timedelta
+
+    cooldown_after_stop = TimeDeltaSensor(
+        task_id="cooldown_after_stop",
+        delta=timedelta(seconds=15),
+    )
+
+    start_spark_services = DockerOperator(
+        task_id="docker_compose_up_spark",
+        container_name="airflow-compose-up-spark",
+        image="docker:27.1.1-cli",
+        docker_url="unix://var/run/docker.sock",
+        working_dir=HOST_PROJECT_PATH,
+        command=[
+            "docker",
+            "compose",
+            "-f",
+            "docker-compose.yaml",
+            "up",
+            "-d",
+            "spark",
+            "spark-worker",
+            "spark-history",
+        ],
+        mounts=[
+            Mount(
+                source="/var/run/docker.sock",
+                target="/var/run/docker.sock",
+                type="bind",
             ),
-        )
-        .withColumn(
-            "price_raw",
-            when(
-                should_parse_content,
-                clean_wording(
-                    regexp_extract(
-                        content,
-                        r"\[售價\]([\s\S]*?)\[交易方式/地點\]",
-                        1,
-                    )
-                ),
+            Mount(
+                source=HOST_PROJECT_PATH,
+                target=HOST_PROJECT_PATH,
+                type="bind",
             ),
-        )
+        ],
+        mount_tmp_dir=False,
+        auto_remove="force",
+    )
+    # 20251213_001 <<
+
+    wait_spark_ready = DockerOperator(
+        task_id="wait_spark_ready",
+        image="docker:27.1.1-cli",
+        docker_url="unix://var/run/docker.sock",
+        working_dir=HOST_PROJECT_PATH,
+        command=[
+            "sh", "-c",
+            """
+            for i in {1..30}; do
+            docker exec spark spark-submit --version >/dev/null 2>&1 && exit 0
+            echo "Waiting for Spark..."
+            sleep 5
+            done
+            echo "Spark still not ready"
+            exit 1
+            """
+        ],
+        mounts=[
+            Mount(source="/var/run/docker.sock", target="/var/run/docker.sock", type="bind"),
+            Mount(source=HOST_PROJECT_PATH, target=HOST_PROJECT_PATH, type="bind"),
+        ],
+        mount_tmp_dir=False,
+        auto_remove="force",
     )
 
-# 從擷取的文字探究細節
-# 商品類型(product_type) : iPhone, iPad, Mac, Airpods
-# 型號數字(model_number) : 15, 16
-# 型號細節(model_variant): pro, mini
-# 保固(is_warranty_valid)
-# 價格(price)
-# 容量數字(capacity)     : 256, 512, 1
-# 容量單位(capacity_unit): GB, TB
-# 顏色(color)
-def parse_product_fields(df: DataFrame) -> DataFrame:
-    should_parse_content = ( 
-        ~col("is_multi_product") 
-        & ~col("is_announcement") 
-        & col("trade_type").isin(["sell", "buy"]) 
-    )
-    
-    return (
-        df.withColumn(
-            "product_type",
-            when(~should_parse_content, lit(None))
-            .when(lower(col("model_raw")).contains("iphone"), "iPhone")
-            .when(lower(col("model_raw")).contains("ipad"), "iPad")
-            .when(lower(col("model_raw")).contains("airpod"), "AirPods")
-            .when(lower(col("model_raw")).contains("mac"), "Mac")
-            .when(lower(col("model_raw")).contains("pencil"), "Apple Pencil")
-            .when(lower(col("model_raw")).contains("appletv"), "Apple TV")
-            .when(lower(col("model_raw")).contains("applewatch"), "Apple Watch")
-            .when(lower(col("model_raw")).contains("homepod"), "HomePod")
-            .when(lower(col("model_raw")).contains("earpod"), "EarPods")
-            .when(lower(col("model_raw")).contains("airtag"), "AirTag")
-            .otherwise(None),
-        )
-        .withColumn(
-            "model_number",
-            when(should_parse_content,
-                 regexp_extract(lower(col("model_raw")),
-                                r"(iphone|ipad|mac)\s*([0-9]{1,2})", 2)),
-        )
-        .withColumn(
-            "model_variant",
-            when(~should_parse_content, lit(None))
-            # AirPods：只抓 pro / max（避免 airpods -> air）
-            .when(col("product_type") == "AirPods",
-                  regexp_extract(lower(col("model_raw")), r"(pro|max)", 1))
-            # 其他：維持你原本的 variant 規則（air 不會影響 airpods 了）
-            .otherwise(regexp_extract(lower(col("model_raw")), r"(promax|pro|plus|air|mini)", 1)),
-        )
-        .withColumn(
-            "is_warranty_valid",
-            when(~should_parse_content, lit(None))
-            .when(col("warranty_raw").contains("過保"), lit(False))
-            .when(col("warranty_raw") != "", lit(True))
-            .otherwise(lit(None))
-            .cast(BooleanType()),
-        )
-        .withColumn(
-            "price",
-            when(should_parse_content,
-                 regexp_replace(col("price_raw"), r"[^\d]", ""))
-            .cast(IntegerType()),
-        )
-        .withColumn(
-            "capacity",
-            when(should_parse_content,
-                 regexp_extract(col("spec_raw"), r"([0-9]{2,4})\s*(GB|TB)", 1)),
-        )
-        .withColumn(
-            "capacity_unit",
-            when(should_parse_content,
-                 regexp_extract(col("spec_raw"), r"([0-9]{2,4})\s*(GB|TB)", 2)),
-        )
-        .withColumn(
-            "color",
-            when(should_parse_content,
-                 regexp_extract(col("spec_raw"),
-                                r"(星光|午夜|藍|黑|白|紅|金|銀|紫|綠)", 1)),
-        )
+    # 真正執行 Spark 建表（受 Pool 控制，避免多 Spark 作業互踩）
+    build_formatted_table = BashOperator(
+        task_id="build_formatted_table",
+        bash_command=SPARK_SUBMIT_CMD,
+        pool=POOL_NAME,
+        # 匯合點：允許另一支路徑被 skipped，只要沒有 failed，且至少一支成功即可
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+        retries=3,                          # 失敗時重試 3 次
+        retry_delay=timedelta(seconds=30),  # 每次間隔 30 秒
+        doc_md=f"""
+        以 spark-submit 建表。  
+        使用 Pool: `{POOL_NAME}` 避免並發互踩。
+        指令：
+        ```
+        {SPARK_SUBMIT_CMD}
+        ```
+        """,
+        outlets=[FORMATTED_UPDATED],
     )
 
-# 補足內文的不足
-# 當內文不足以判斷時，針對 null資料，嘗試用文章標題分辨
-# product_type
-# model_number
-# capacity
-# model_variant
-# capacity_unit
-# color
-def apply_title_fallback(df: DataFrame) -> DataFrame:
-    title = col("title")
-    should_parse_content = ( 
-        ~col("is_multi_product") 
-        & ~col("is_announcement") 
-        & col("trade_type").isin(["sell", "buy"]) 
+    # 20251213_001 >>
+    stop_spark_services_at_the_end = DockerOperator(
+        task_id="docker_compose_stop_spark_at_the_end",
+        container_name="airflow-compose-stop-spark",
+        image="docker:27.1.1-cli",
+        docker_url="unix://var/run/docker.sock",
+        working_dir=HOST_PROJECT_PATH,
+        command=[
+            "docker",
+            "compose",
+            "-f",
+            "docker-compose.yaml",
+            "stop",
+            "spark",
+            "spark-worker",
+            "spark-history",
+        ],
+        mounts=[
+            Mount(
+                source="/var/run/docker.sock",
+                target="/var/run/docker.sock",
+                type="bind",
+            ),
+            Mount(
+                source=HOST_PROJECT_PATH,
+                target=HOST_PROJECT_PATH,
+                type="bind",
+            ),
+        ],
+        mount_tmp_dir=False,
+        auto_remove="force",
+        trigger_rule=TriggerRule.ALL_DONE, # 20260110_001
     )
+    # 20251213_001 <<
 
-    return (
-        df.withColumn(
-            "product_type",
-            when(should_parse_content & col("product_type").isNull()
-                 & lower(title).contains("iphone"), "iPhone")
-            .when(should_parse_content & col("product_type").isNull()
-                  & lower(title).contains("ipad"), "iPad")
-            .when(should_parse_content & col("product_type").isNull()
-                  & lower(title).contains("airpod"), "AirPods")
-            .when(should_parse_content & col("product_type").isNull()
-                  & lower(title).contains("mac"), "Mac")
-            .when(should_parse_content & col("product_type").isNull()
-                  & lower(title).contains("pencil"), "Apple Pencil")
-            .when(should_parse_content & col("product_type").isNull()
-                  & lower(title).contains("apple tv"), "Apple TV")
-            .when(should_parse_content & col("product_type").isNull()
-                  & lower(title).contains("apple watch"), "Apple Watch")
-            .when(should_parse_content & col("product_type").isNull()
-                  & lower(title).contains("homepod"), "HomePod")
-            .when(should_parse_content & col("product_type").isNull()
-                  & lower(title).contains("earpod"), "EarPods")
-            .when(should_parse_content & col("product_type").isNull()
-                  & lower(title).contains("airtag"), "AirTag")
-            .otherwise(col("product_type")),
-        )
-        .withColumn(
-            "model_number",
-            when(should_parse_content & (col("model_number") == ""),
-                 regexp_extract(lower(title),
-                                r"(iphone|ipad)\s*([0-9]{1,2})", 2))
-            .otherwise(col("model_number")),
-        )
-        .withColumn(
-            "model_variant",
-            when(should_parse_content & (col("model_variant") == ""),
-                 regexp_extract(lower(title),
-                                r"(pro max|pro|plus| air |mini)", 1))
-            .otherwise(col("model_variant")),
-        )
-        .withColumn(
-            "capacity",
-            when(should_parse_content & (col("capacity") == ""),
-                 regexp_extract(title, r"([0-9]{2,4})\s*(GB|TB)", 1))
-            .otherwise(col("capacity")),
-        )
-        .withColumn(
-            "capacity_unit",
-            when(should_parse_content & (col("capacity_unit") == ""),
-                 regexp_extract(title, r"([0-9]{2,4})\s*(GB|TB)", 2))
-            .otherwise(col("capacity_unit")),
-        )
-        .withColumn(
-            "color",
-            when(should_parse_content & (col("color") == ""),
-                 regexp_extract(title,
-                                r"(星光|午夜|藍|黑|白|紅|金|銀|紫|綠)", 1))
-            .otherwise(col("color")),
-        )
-    )
+    # 相依關係（**關鍵**：build_formatted_table 不直接掛 Branch 下）
+    latest_only >> branch_on_manual
+    branch_on_manual >> [go_build, debounce]
 
+    [go_build, debounce] \
+        >> stop_spark_services \
+        >> cooldown_after_stop \
+        >> start_spark_services \
+        >> wait_spark_ready \
+        >> build_formatted_table \
+        >> stop_spark_services_at_the_end
 
-def write_to_postgres(df: DataFrame):
-    final_df = df.select(
-        "title",
-        "created_date",
-        "link",
-        "description",
-        "trade_type",
-        "is_multi_product",
-        "is_announcement",
-        "product_type",
-        "model_number",
-        "model_variant",
-        "capacity",
-        "capacity_unit",
-        "color",
-        "price",
-        "is_warranty_valid",
-    )
-
-    row_count = final_df.count()
-    logger.info(f"▶ [WRITE] rows={row_count}")
-
-    # 1 個 partition，等於一次寫入全部資料（約8萬筆）
-    # 8 個 partition可以分成 8個 connection來寫入
-
-    final_df = final_df.repartition(8) # 20260110_002
-
-    final_df.write.jdbc(
-        url=jdbc_url,
-        table=dest_table,
-        mode="overwrite",
-        properties=jdbc_props,
-    )
-
-
-# =========================================================
-# Main Pipeline
-# =========================================================
-def main():
-    df = guard("Read source", read_source, action=True)
-    df = guard("Derive trade_type", lambda: derive_trade_type(df))
-    df = guard("Apply announcement guard", lambda: apply_announcement_guard(df))
-    df = guard("Apply multi-product guard", lambda: apply_multi_product_guard(df))
-    df = guard("Extract sections", lambda: extract_sections(df))
-    df = guard("Parse product fields", lambda: parse_product_fields(df))
-    df = guard("Apply title fallback", lambda: apply_title_fallback(df))
-    guard("Write to Postgres", lambda: write_to_postgres(df))
-
-
-if __name__ == "__main__":
-    try:
-        main()
-        logger.info("[JOB_STATUS] SUCCESS")
-    except Exception:
-        logger.error("[JOB_STATUS] FAILED")
-        raise
-    finally:
-        spark.stop()
