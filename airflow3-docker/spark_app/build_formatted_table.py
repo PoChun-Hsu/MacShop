@@ -59,17 +59,24 @@ spark = (
 )
 spark.sparkContext.setLogLevel("WARN") # 只顯示 WARN等級以上的 log, INFO不顯示
 
-jdbc_url = (
-    "jdbc:postgresql://postgres:5432/airflow?"
-    "currentSchema=public&reWriteBatchedInserts=true"
-)
+jdbc_url = "jdbc:postgresql://postgres:5432/airflow?currentSchema=public"
 src_table = "public.ptt_macshop_articles"
 dest_table = "ptt_macshop_articles_product_detail"
 
+# rewriteBatchedInserts把多個 Insert改成一整包 insert
+# -- 原本（慢）
+# INSERT INTO t VALUES (...);
+# INSERT INTO t VALUES (...);
+# -- 改寫後（快）
+# INSERT INTO t VALUES (...), (...), (...);
+
+# 業界實務一個 batch約 500 ~ 2000
 jdbc_props = {
     "user": "airflow",
     "password": "airflow",
     "driver": "org.postgresql.Driver",
+    "batchsize": "1000",               # 20260110_001 
+    #"rewriteBatchedInserts": "true",   # 20260110_001
 }
 
 
@@ -425,6 +432,11 @@ def write_to_postgres(df: DataFrame):
 
     row_count = final_df.count()
     logger.info(f"▶ [WRITE] rows={row_count}")
+
+    # 1 個 partition，等於一次寫入全部資料（約8萬筆）
+    # 8 個 partition可以分成 8個 connection來寫入
+
+    final_df = final_df.repartition(8) # 20260110_001
 
     final_df.write.jdbc(
         url=jdbc_url,
