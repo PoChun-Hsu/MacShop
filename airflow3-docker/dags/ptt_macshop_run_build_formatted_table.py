@@ -193,7 +193,7 @@ with DAG(
         pool=POOL_NAME,
         # 匯合點：允許另一支路徑被 skipped，只要沒有 failed，且至少一支成功即可
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
-        retries=2,                          # 失敗時重試 2 次
+        retries=3,                          # 失敗時重試 3 次
         retry_delay=timedelta(seconds=30),  # 每次間隔 30 秒
         doc_md=f"""
         以 spark-submit 建表。  
@@ -237,7 +237,7 @@ with DAG(
         ],
         mount_tmp_dir=False,
         auto_remove="force",
-        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+        trigger_rule=TriggerRule.ALL_DONE,
     )
     # 20251213_001 <<
 
