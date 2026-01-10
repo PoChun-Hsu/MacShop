@@ -11,6 +11,8 @@
 
 # 20251010_001 - PoChun Hsu - [Add]     Dataset for trigger across DAGs.
 # 20251213_001 - PoChun Hsu - [Add]     Jobs for turn on/off Spark. Based on practical experience, starting the Spark service only when executing a Spark job results in a higher success rate.
+# 20260110_001 - PoChun Hsu - [Alter]   Stop Spark service no matter job fail or success  
+
 from __future__ import annotations
 import pendulum
 from datetime import timedelta
@@ -193,7 +195,7 @@ with DAG(
         pool=POOL_NAME,
         # 匯合點：允許另一支路徑被 skipped，只要沒有 failed，且至少一支成功即可
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
-        retries=2,                          # 失敗時重試 2 次
+        retries=3,                          # 失敗時重試 3 次
         retry_delay=timedelta(seconds=30),  # 每次間隔 30 秒
         doc_md=f"""
         以 spark-submit 建表。  
@@ -237,7 +239,7 @@ with DAG(
         ],
         mount_tmp_dir=False,
         auto_remove="force",
-        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+        trigger_rule=TriggerRule.ALL_DONE, # 20260110_001
     )
     # 20251213_001 <<
 
