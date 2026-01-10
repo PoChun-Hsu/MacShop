@@ -154,6 +154,13 @@ with DAG(
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
     )
 
+    from datetime import timedelta
+
+    cooldown_after_stop = TimeDeltaSensor(
+        task_id="cooldown_after_stop",
+        delta=timedelta(seconds=15),
+    )
+
     start_spark_services = DockerOperator(
         task_id="docker_compose_up_spark",
         container_name="airflow-compose-up-spark",
@@ -187,6 +194,31 @@ with DAG(
         auto_remove="force",
     )
     # 20251213_001 <<
+
+    wait_spark_ready = DockerOperator(
+        task_id="wait_spark_ready",
+        image="docker:27.1.1-cli",
+        docker_url="unix://var/run/docker.sock",
+        working_dir=HOST_PROJECT_PATH,
+        command=[
+            "sh", "-c",
+            """
+            for i in {1..30}; do
+            docker exec spark spark-submit --version >/dev/null 2>&1 && exit 0
+            echo "Waiting for Spark..."
+            sleep 5
+            done
+            echo "Spark still not ready"
+            exit 1
+            """
+        ],
+        mounts=[
+            Mount(source="/var/run/docker.sock", target="/var/run/docker.sock", type="bind"),
+            Mount(source=HOST_PROJECT_PATH, target=HOST_PROJECT_PATH, type="bind"),
+        ],
+        mount_tmp_dir=False,
+        auto_remove="force",
+    )
 
     # 真正執行 Spark 建表（受 Pool 控制，避免多 Spark 作業互踩）
     build_formatted_table = BashOperator(
@@ -246,4 +278,12 @@ with DAG(
     # 相依關係（**關鍵**：build_formatted_table 不直接掛 Branch 下）
     latest_only >> branch_on_manual
     branch_on_manual >> [go_build, debounce]
-    [go_build, debounce] >>  stop_spark_services >> start_spark_services >> build_formatted_table >> stop_spark_services_at_the_end
+
+    [go_build, debounce] \
+        >> stop_spark_services \
+        >> cooldown_after_stop \
+        >> start_spark_services \
+        >> wait_spark_ready \
+        >> build_formatted_table \
+        >> stop_spark_services_at_the_end
+
