@@ -412,6 +412,125 @@ def apply_title_fallback(df: DataFrame) -> DataFrame:
         )
     )
 
+from pyspark import TaskContext
+import psycopg2
+from psycopg2.extras import execute_batch
+
+
+def write_partition_to_pg(rows):
+    conn = None
+
+    # === Spark Task Context（關鍵）===
+    ctx = TaskContext.get()
+    partition_id = ctx.partitionId() if ctx else -1
+    attempt_id = ctx.attemptNumber() if ctx else -1
+
+    print(
+        f"[WRITE][EXECUTOR] START partition={partition_id}, attempt={attempt_id}",
+        flush=True
+    )
+
+    try:
+        conn = psycopg2.connect(
+            host="postgres",
+            port=5432,
+            dbname="airflow",
+            user="airflow",
+            password="airflow",
+            connect_timeout=10,
+        )
+        conn.autocommit = False
+        cur = conn.cursor()
+
+        sql = """
+        INSERT INTO ptt_macshop_articles_product_detail (
+            title, created_date, link, description,
+            trade_type, is_multi_product, is_announcement,
+            product_type, model_number, model_variant,
+            capacity, capacity_unit, color,
+            price, is_warranty_valid
+        )
+        VALUES (
+            %(title)s, %(created_date)s, %(link)s, %(description)s,
+            %(trade_type)s, %(is_multi_product)s, %(is_announcement)s,
+            %(product_type)s, %(model_number)s, %(model_variant)s,
+            %(capacity)s, %(capacity_unit)s, %(color)s,
+            %(price)s, %(is_warranty_valid)s
+        )
+        ON CONFLICT (link) DO UPDATE SET
+            title             = EXCLUDED.title,
+            created_date      = EXCLUDED.created_date,
+            description       = EXCLUDED.description,
+            trade_type        = EXCLUDED.trade_type,
+            is_multi_product  = EXCLUDED.is_multi_product,
+            is_announcement   = EXCLUDED.is_announcement,
+            product_type      = EXCLUDED.product_type,
+            model_number      = EXCLUDED.model_number,
+            model_variant     = EXCLUDED.model_variant,
+            capacity          = EXCLUDED.capacity,
+            capacity_unit     = EXCLUDED.capacity_unit,
+            color             = EXCLUDED.color,
+            price             = EXCLUDED.price,
+            is_warranty_valid = EXCLUDED.is_warranty_valid
+        """
+
+
+        batch = []
+        count = 0
+        BATCH_SIZE = 1000
+
+        for r in rows:
+            batch.append(r.asDict())
+            count += 1
+
+            if count % BATCH_SIZE == 0:
+                execute_batch(cur, sql, batch, page_size=BATCH_SIZE)
+                conn.commit()
+
+                print(
+                    f"[WRITE][EXECUTOR] partition={partition_id} "
+                    f"batch committed, total_rows={count}",
+                    flush=True
+                )
+                batch.clear()
+
+        # flush remaining rows
+        if batch:
+            execute_batch(cur, sql, batch, page_size=BATCH_SIZE)
+            conn.commit()
+
+            print(
+                f"[WRITE][EXECUTOR] partition={partition_id} "
+                f"final batch committed, total_rows={count}",
+                flush=True
+            )
+
+        print(
+            f"[WRITE][EXECUTOR] END partition={partition_id}, total_rows={count}",
+            flush=True
+        )
+
+    except Exception as e:
+        print(
+            f"[WRITE][EXECUTOR][FAILED] partition={partition_id}, attempt={attempt_id}",
+            flush=True
+        )
+        raise
+
+    finally:
+        if conn:
+            conn.close()
+
+from pyspark.sql.functions import col, when, trim
+
+def normalize_int_columns(df, columns):
+    for c in columns:
+        df = df.withColumn(
+            c,
+            when(trim(col(c)) == "", None)
+            .otherwise(col(c).cast("int"))
+        )
+    return df
 
 def write_to_postgres(df: DataFrame):
     final_df = df.select(
@@ -432,6 +551,11 @@ def write_to_postgres(df: DataFrame):
         "is_warranty_valid",
     )
 
+    final_df = normalize_int_columns(
+        final_df,
+        ["price", "capacity"]
+    )
+
     row_count = final_df.count()
     logger.info(f"▶ [WRITE] rows={row_count}")
 
@@ -440,12 +564,22 @@ def write_to_postgres(df: DataFrame):
 
     final_df = final_df.repartition(8) # 20260110_002
 
-    final_df.write.jdbc(
-        url=jdbc_url,
-        table=dest_table,
-        mode="overwrite",
-        properties=jdbc_props,
+    logger.info("[WRITE] start foreachPartition")
+
+    (
+        final_df
+        .foreachPartition(write_partition_to_pg)
     )
+
+    logger.info("[WRITE] all partitions completed")
+
+    # final_df.write.jdbc(
+    #     url=jdbc_url,
+    #     table=dest_table,
+    #     mode="overwrite",
+    #     properties=jdbc_props,
+    # )
+    
 
 
 # =========================================================
