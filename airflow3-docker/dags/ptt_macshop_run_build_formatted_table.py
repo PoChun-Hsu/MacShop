@@ -154,6 +154,13 @@ with DAG(
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
     )
 
+    # 20260110_002 >>
+    cooldown_after_stop = TimeDeltaSensor(
+        task_id="cooldown_after_stop",
+        delta=timedelta(seconds=15),
+    )
+    # 20260110_002 <<
+
     start_spark_services = DockerOperator(
         task_id="docker_compose_up_spark",
         container_name="airflow-compose-up-spark",
@@ -188,6 +195,41 @@ with DAG(
     )
     # 20251213_001 <<
 
+    # 20260110_003 >>
+    wait_spark_ready = DockerOperator(
+        task_id="wait_spark_ready",
+        image="docker:27.1.1-cli",
+        docker_url="unix://var/run/docker.sock",
+        working_dir=HOST_PROJECT_PATH,
+        # 最多嘗試 30次，大概 150秒
+        # 嘗試進入 spark container，執行 spark-submit --version
+        # 如果 Spark JVM 已啟動完成，這行會成功（exit code = 0）
+        # 沒成功就等 5秒
+        # 超過重試次數仍失敗，回傳非 0，Airflow task 直接 fail
+        command=[
+            "sh", "-c",
+            """
+            for i in {1..30}; do
+            docker exec spark spark-submit --version >/dev/null 2>&1 && exit 0
+            echo "Waiting for Spark..."
+            sleep 5
+            done
+            echo "Spark still not ready"
+            exit 1
+            """
+        ],
+        # 掛載 docker socket，讓 container 可以控制 host docker
+        mounts=[
+            Mount(source="/var/run/docker.sock", target="/var/run/docker.sock", type="bind"),
+            Mount(source=HOST_PROJECT_PATH, target=HOST_PROJECT_PATH, type="bind"),
+        ],
+        # 不使用臨時目錄（避免奇怪權限問題）
+        mount_tmp_dir=False,
+        # container 結束後自動刪除（乾淨，不留垃圾）
+        auto_remove="force",
+    )
+    # 20260110_003 <<
+
     # 真正執行 Spark 建表（受 Pool 控制，避免多 Spark 作業互踩）
     build_formatted_table = BashOperator(
         task_id="build_formatted_table",
@@ -209,6 +251,7 @@ with DAG(
     )
 
     # 20251213_001 >>
+    
     stop_spark_services_at_the_end = DockerOperator(
         task_id="docker_compose_stop_spark_at_the_end",
         container_name="airflow-compose-stop-spark",
@@ -246,4 +289,12 @@ with DAG(
     # 相依關係（**關鍵**：build_formatted_table 不直接掛 Branch 下）
     latest_only >> branch_on_manual
     branch_on_manual >> [go_build, debounce]
-    [go_build, debounce] >>  stop_spark_services >> start_spark_services >> build_formatted_table >> stop_spark_services_at_the_end
+
+    [go_build, debounce] \
+        >> stop_spark_services \
+        >> cooldown_after_stop \
+        >> start_spark_services \
+        >> wait_spark_ready \
+        >> build_formatted_table \
+        >> stop_spark_services_at_the_end
+
