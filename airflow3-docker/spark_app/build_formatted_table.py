@@ -422,6 +422,7 @@ from psycopg2.extras import execute_batch
 # connection太多，都花資源再切換沒時間寫入，connection太少，單一個寫入量太高，壓力太大
 # 如果 insert的內容已經存在就改成 update避免 PK重複，也可以持續寫入不中斷
 # 會印出每一段寫入的相關資訊，發生錯誤時知道哪一個 partition 死在大概什麼位置
+# 20260114_001 >>
 def write_partition_to_pg(rows):
     conn = None
 
@@ -526,6 +527,7 @@ def write_partition_to_pg(rows):
     finally:
         if conn:
             conn.close()
+# 20260114_001 <<
 
 # 20260114_002
 # 把空值轉為 None，讓 int 欄位不會報錯
@@ -540,7 +542,7 @@ def normalize_int_columns(df, columns):
         )
     return df
 
-# 20260114_001 >>
+
 def write_to_postgres(df: DataFrame):
     final_df = df.select(
         "title",
@@ -573,6 +575,7 @@ def write_to_postgres(df: DataFrame):
 
     final_df = final_df.repartition(8) # 20260110_002
 
+    # 20260114_001 >>
     logger.info("[WRITE] start foreachPartition")
 
     (
@@ -581,7 +584,7 @@ def write_to_postgres(df: DataFrame):
     )
 
     logger.info("[WRITE] all partitions completed")
-# 20260114_001 <<
+    # 20260114_001 <<
     
 
 
