@@ -1,6 +1,8 @@
 # 20260105_001 - PoChun Hsu - [Add]     New Version.
 # 20260110_001 - PoChun Hsu - [Add]     Batch size and bulk insert. 
 # 20260110_002 - PoChun Hsu - [Add]     Add partition to increase connection and decrease insert quantity.
+# 20260114_001 - PoChun Hsu - [Alter]   Enforce partition. Batch insert with limited quantity(1000) into postgres. Update when duplicate in insert.  
+# 20260114_002 - PoChun Hsu - [Add]     Transform null value for integer fields.
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
@@ -416,7 +418,10 @@ from pyspark import TaskContext
 import psycopg2
 from psycopg2.extras import execute_batch
 
-
+# 分成多個 partition 寫入 postgres，每個 partition是一個 connection
+# connection太多，都花資源再切換沒時間寫入，connection太少，單一個寫入量太高，壓力太大
+# 如果 insert的內容已經存在就改成 update避免 PK重複，也可以持續寫入不中斷
+# 會印出每一段寫入的相關資訊，發生錯誤時知道哪一個 partition 死在大概什麼位置
 def write_partition_to_pg(rows):
     conn = None
 
@@ -442,6 +447,7 @@ def write_partition_to_pg(rows):
         conn.autocommit = False
         cur = conn.cursor()
 
+        # 寫入如果發現重複就改為 update
         sql = """
         INSERT INTO ptt_macshop_articles_product_detail (
             title, created_date, link, description,
@@ -474,7 +480,7 @@ def write_partition_to_pg(rows):
             is_warranty_valid = EXCLUDED.is_warranty_valid
         """
 
-
+        # 一次 append 1000 筆資料，避免 postgres 寫爆
         batch = []
         count = 0
         BATCH_SIZE = 1000
@@ -521,6 +527,8 @@ def write_partition_to_pg(rows):
         if conn:
             conn.close()
 
+# 20260114_002
+# 把空值轉為 None，讓 int 欄位不會報錯
 from pyspark.sql.functions import col, when, trim
 
 def normalize_int_columns(df, columns):
@@ -532,6 +540,7 @@ def normalize_int_columns(df, columns):
         )
     return df
 
+# 20260114_001 >>
 def write_to_postgres(df: DataFrame):
     final_df = df.select(
         "title",
@@ -572,13 +581,7 @@ def write_to_postgres(df: DataFrame):
     )
 
     logger.info("[WRITE] all partitions completed")
-
-    # final_df.write.jdbc(
-    #     url=jdbc_url,
-    #     table=dest_table,
-    #     mode="overwrite",
-    #     properties=jdbc_props,
-    # )
+# 20260114_001 <<
     
 
 
