@@ -5,6 +5,7 @@
 # 20251024_001 - PoChun Hsu
 # [Merged] Integrate Spark, RedisInsight, builder, and GCP key support from Airflow 2.11.0 into 3.1.0 structure.
 # -----------------------------------------------------------------------------
+# 20260309_001 - PoChun Hsu - [Add]  DBT
 
 ---
 x-airflow-common:
@@ -33,6 +34,13 @@ x-airflow-common:
     GCP_KEY_PATH: /opt/airflow/keys/starry-center-405211-04dd3e1fa083.json
     GCP_PROJECT: starry-center-405211
     GCP_SCOPE: https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive
+
+    # -------------------------------
+    # Enable directly copy log from Web UI
+    # -------------------------------
+    AIRFLOW__LOGGING__LOG_FETCH_TIMEOUT_SEC: '0'
+    AIRFLOW__LOGGING__LOG_FETCH_DELAY_SEC: '0'
+
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
@@ -41,6 +49,8 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/scripts:/opt/airflow/scripts:ro
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/keys:/opt/airflow/keys:ro
     - /var/run/docker.sock:/var/run/docker.sock   # ★ 新增：允許 DockerOperator/Spark trigger
+    - ${AIRFLOW_PROJ_DIR:-.}:/opt/project:ro
+    - ./:/opt/project:rw
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -173,6 +183,13 @@ services:
       - SPARK_MODE=master
       - SPARK_HOME=/opt/spark
       - SPARK_NO_DAEMONIZE=true
+      - SPARK_WORKER_OPTS=-Dspark.worker.cleanup.enabled=true -Dspark.worker.cleanup.interval=300
+      - SPARK_LOCAL_DIRS=/tmp/spark-temp
+      - SPARK_WORKER_DIR=/opt/spark/work-dir
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
+      - SPARK_DRIVER_MEMORY=2G
+      - SPARK_EXECUTOR_MEMORY=2G
+      - SPARK_SUBMIT_OPTS=-Dlog4j.configurationFile=/opt/spark/conf/log4j2.properties
     ports:
       - "8088:8080"
       - "7077:7077"
@@ -182,7 +199,7 @@ services:
       - ./output_parquet:/opt/spark-output
       - ./spark-events:/tmp/spark-events
       - ./spark_conf:/opt/spark/conf
-      - ./spark_jars:/opt/spark/external-jars:ro
+      - ./spark/spark_jars:/opt/spark/external-jars:ro
     deploy:
       resources:
         limits:
@@ -196,6 +213,14 @@ services:
       - SPARK_HOME=/opt/spark
       - SPARK_WORKER_MEMORY=4G
       - SPARK_NO_DAEMONIZE=true
+      - SPARK_WORKER_OPTS=-Dspark.worker.cleanup.enabled=true \
+        -Dspark.worker.cleanup.interval=300 \
+        -Dlog4j.configurationFile=/opt/spark/conf/log4j2.properties
+      - SPARK_LOCAL_DIRS=/tmp/spark-temp
+      - SPARK_WORKER_DIR=/opt/spark/work-dir
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
+      - SPARK_DRIVER_MEMORY=2G
+      - SPARK_EXECUTOR_MEMORY=2G
     volumes:
       - ./output_parquet:/opt/spark-output
       - ./spark_conf:/opt/spark/conf
@@ -213,6 +238,23 @@ services:
       - "18080:18080"
     volumes:
       - ./spark-events:/tmp/spark-events:ro
+
+  # 20260309_001 >>
+  dbt:
+    image: ghcr.io/dbt-labs/dbt-postgres:1.7.0
+    platform: linux/amd64
+    container_name: dbt
+    working_dir: /usr/app
+    volumes:
+      - ./dbt:/usr/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    tty: true
+    stdin_open: true
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+  # 20260309_001 <<
 
   # -------------------------------------
   # Builders (for reproducible builds)
