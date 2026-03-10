@@ -1,0 +1,1 @@
+{"_invocation_id": "08bb7c4a-312b-4502-9d64-0a0ee0feb052", "linked": {"0": {"name": "model.airflow_dbt.test_model", "type": "model"}, "1": {"name": "model.airflow_dbt.example", "type": "model"}}}
