@@ -3,9 +3,9 @@
 <img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/f838f1af-ebc0-4d91-8684-18b4199564a7" />
 1. 從 PTT Macshop 版進行爬蟲，使用 Redis 避免存取重複資料，將有更新的文章寫入 PostgreSQL，形成 raw data。<br>
 2. 將 raw data 運用 Pyspark 擷取出細節資訊，如產品品項，價格，顏色，容量等，存回 PostgreSQL 形成 Data Warehouse.<br>
-4. 運用 DBT 從 Data Warehouse 整理出每日交易量，平均成交價格等資訊，存回 PostgreSQL 形成 Data Mart.<br>
-5. 上傳 Data Mart 資訊至 Google Sheet 儲存。<br>
-6. Looker Studio 串接 Goolge Sheet 每 15分鐘更新資料，製作視覺化儀表板。<br>
+3. 運用 DBT 從 Data Warehouse 整理出每日交易量，平均成交價格等資訊，存回 PostgreSQL 形成 Data Mart.<br>
+4. 上傳 Data Mart 資訊至 Google Sheet 儲存。<br>
+5. Looker Studio 串接 Goolge Sheet 每 15分鐘更新資料，製作視覺化儀表板。<br>
 
 
 ## 點擊下圖即可超連結至 Looker Studio 儀表板
