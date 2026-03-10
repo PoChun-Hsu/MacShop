@@ -1,3 +1,5 @@
+# 20260310_001 - PoChun Hsu - [Create]  Table
+
 {{ config(materialized='table') }}
 
 select
