@@ -1,0 +1,11 @@
+name: airflow_dbt
+version: "1.0"
+config-version: 2
+
+profile: default
+
+model-paths: ["models"]
+
+models:
+  airflow_dbt:
+    +materialized: view
