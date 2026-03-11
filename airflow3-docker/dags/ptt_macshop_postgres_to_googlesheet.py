@@ -14,6 +14,9 @@ API 會回 400 並中止整批寫入。
 """
 
 # 20251010_001 - PoChun Hsu - [Add]     Dataset for trigger across DAGs.
+# 20260311_001 - PoChun Hsu - [Alter]   collect the parameter.
+# 20260311_002 - PoChun Hsu - [Alter]   Define a single workflow of inserting.
+# 20260311_003 - PoChun Hsu - [Alter]   Parallel insert to Google sheet.
 
 from datetime import datetime, date, timedelta
 from decimal import Decimal
@@ -33,7 +36,8 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 FORMATTED_UPDATED = Dataset("dataset://ptt_macshop/formatted_updated")
 
 # ===================== Airflow Variables（可於 UI 調整） =====================
-# 原本主 spreadsheet
+# 20260311_001 >>
+# Data Warehouse spreadsheet
 MAIN_SPREADSHEET_ID = Variable.get(
     "GOOGLE_SHEETS_SPREADSHEET_ID",
     default_var="1MFwhTSKOc_RM8wKvTuHrj7doOxiArQiyOxFnAgXKrSQ"
@@ -95,6 +99,7 @@ EXPORT_TARGETS = [
         "sql": MONTHLY_PRODUCT_INDEX_SQL,
     },
 ]
+# 20260311_001 <<
 
 # 連線 ID
 PG_CONN_ID  = Variable.get("PG_CONN_ID", default_var="postgres_default")
@@ -344,7 +349,7 @@ def upload_values_in_batches(spreadsheet_id: str, sheet_name: str, values: List[
 
     return total_cells
 
-# 20260311_001 >>
+# 20260311_002 >>
 # ===================== 主任務 =====================
 # ===================== 定義單一 sheet 寫入流程 =====================
 def export_one_target_to_sheet(
@@ -394,7 +399,13 @@ def export_one_target_to_sheet(
         "cols": cols_needed,
         "cells_written": cells,
     }
+# 20260311_002 <<
 
+# 20260311_003 >>
+# ===================== Wrapper =====================
+# 讓上面的 export_one_target_to_sheet 維持 python function 
+# 這邊包起來讓迴圈能反覆 call
+# 因為 task 之間沒有相依關係，因此可以實現平行跑
 def task_export_one_target(
     spreadsheet_id: str,
     sheet_name: str,
@@ -410,7 +421,7 @@ def task_export_one_target(
         pg_conn_id=pg_conn_id,
         gcp_conn_id=gcp_conn_id,
     )
-# 20260311_001 <<
+# 20260311_003 <<
 
 
 # ===================== DAG 定義 =====================
@@ -427,6 +438,7 @@ with DAG(
 
     export_tasks = []
 
+    # 20260311_003 >>
     for target in EXPORT_TARGETS:
         task = PythonOperator(
             task_id=target["task_id"],
@@ -440,5 +452,6 @@ with DAG(
             },
         )
         export_tasks.append(task)
+    # 20260311_003 <<
 
     start >> export_tasks >> done
