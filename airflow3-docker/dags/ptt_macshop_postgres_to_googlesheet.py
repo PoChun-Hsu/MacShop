@@ -33,9 +33,68 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 FORMATTED_UPDATED = Dataset("dataset://ptt_macshop/formatted_updated")
 
 # ===================== Airflow Variables（可於 UI 調整） =====================
-SPREADSHEET_ID = Variable.get("GOOGLE_SHEETS_SPREADSHEET_ID", default_var="1MFwhTSKOc_RM8wKvTuHrj7doOxiArQiyOxFnAgXKrSQ")
-SHEET_NAME     = Variable.get("GOOGLE_SHEETS_SHEET_NAME", default_var="sheet1")
-SQL_QUERY      = Variable.get("PG_EXPORT_SQL", default_var="SELECT * FROM ptt_macshop_articles_product_detail ORDER BY created_date DESC")
+# 原本主 spreadsheet
+MAIN_SPREADSHEET_ID = Variable.get(
+    "GOOGLE_SHEETS_SPREADSHEET_ID",
+    default_var="1MFwhTSKOc_RM8wKvTuHrj7doOxiArQiyOxFnAgXKrSQ"
+)
+MAIN_SHEET_NAME = Variable.get(
+    "GOOGLE_SHEETS_SHEET_NAME",
+    default_var="sheet1"
+)
+MAIN_SQL_QUERY = Variable.get(
+    "PG_EXPORT_SQL",
+    default_var="SELECT * FROM ptt_macshop_articles_product_detail ORDER BY created_date DESC"
+)
+
+# daily mart spreadsheet
+DAILY_PRODUCT_INDEX_SPREADSHEET_ID = Variable.get(
+    "GOOGLE_SHEETS_DAILY_PRODUCT_INDEX_SPREADSHEET_ID",
+    default_var="1AQchYJrMj7Q7H02r_krZclnnGx_8BsI9lXW7O3S5UcI"
+)
+DAILY_PRODUCT_INDEX_SHEET_NAME = Variable.get(
+    "GOOGLE_SHEETS_DAILY_PRODUCT_INDEX_SHEET_NAME",
+    default_var="sheet1"
+)
+DAILY_PRODUCT_INDEX_SQL = Variable.get(
+    "PG_EXPORT_DAILY_PRODUCT_INDEX_SQL",
+    default_var='SELECT * FROM analytics."Mart_Log_Daily_Product_Index" ORDER BY created_date DESC'
+)
+
+# monthly mart spreadsheet
+MONTHLY_PRODUCT_INDEX_SPREADSHEET_ID = Variable.get(
+    "GOOGLE_SHEETS_MONTHLY_PRODUCT_INDEX_SPREADSHEET_ID",
+    default_var="1PjZITP2IZgQttWCblP3A2QuG_TQl520yw07bY-Eviok"
+)
+MONTHLY_PRODUCT_INDEX_SHEET_NAME = Variable.get(
+    "GOOGLE_SHEETS_MONTHLY_PRODUCT_INDEX_SHEET_NAME",
+    default_var="sheet1"
+)
+MONTHLY_PRODUCT_INDEX_SQL = Variable.get(
+    "PG_EXPORT_MONTHLY_PRODUCT_INDEX_SQL",
+    default_var='SELECT * FROM analytics."Mart_Log_Monthly_Product_Index" ORDER BY created_month DESC'
+)
+
+EXPORT_TARGETS = [
+    {
+        "task_id": "export_main_sheet",
+        "spreadsheet_id": MAIN_SPREADSHEET_ID,
+        "sheet_name": MAIN_SHEET_NAME,
+        "sql": MAIN_SQL_QUERY,
+    },
+    {
+        "task_id": "export_daily_product_index_sheet",
+        "spreadsheet_id": DAILY_PRODUCT_INDEX_SPREADSHEET_ID,
+        "sheet_name": DAILY_PRODUCT_INDEX_SHEET_NAME,
+        "sql": DAILY_PRODUCT_INDEX_SQL,
+    },
+    {
+        "task_id": "export_monthly_product_index_sheet",
+        "spreadsheet_id": MONTHLY_PRODUCT_INDEX_SPREADSHEET_ID,
+        "sheet_name": MONTHLY_PRODUCT_INDEX_SHEET_NAME,
+        "sql": MONTHLY_PRODUCT_INDEX_SQL,
+    },
+]
 
 # 連線 ID
 PG_CONN_ID  = Variable.get("PG_CONN_ID", default_var="postgres_default")
@@ -285,27 +344,73 @@ def upload_values_in_batches(spreadsheet_id: str, sheet_name: str, values: List[
 
     return total_cells
 
-
+# 20260311_001 >>
 # ===================== 主任務 =====================
-def task_export_and_upload(**context):
-    """主要任務：從 Postgres 匯出並上傳至 Google Sheets"""
+# ===================== 定義單一 sheet 寫入流程 =====================
+def export_one_target_to_sheet(
+    spreadsheet_id: str,
+    sheet_name: str,
+    sql: str,
+    pg_conn_id: str,
+    gcp_conn_id: str,
+    **context
+) -> dict:
+    """單一 SQL -> 單一 Google Sheet 分頁"""
+
     # 1. 載入 Postgres的資料
-    values = fetch_data_from_postgres(SQL_QUERY, PG_CONN_ID)
-    
+    values = fetch_data_from_postgres(sql, pg_conn_id)
+
     # 2. 計算所需 column and row 數量
     rows_needed = len(values)
     cols_needed = max((len(r) for r in values), default=0)
-    
-    # 3. 如果 column or row數量不夠要擴增
-    ensure_sheet_size(SPREADSHEET_ID, SHEET_NAME, rows_needed, cols_needed, GCP_CONN_ID)
-    
-    # 4. 清空 google sheet
-    clear_sheet(SPREADSHEET_ID, SHEET_NAME, GCP_CONN_ID)
-    
-    # 5. 一次append 5*block，最多１０萬個 cells，約 2941筆資料到 google sheet
-    cells = upload_values_in_batches(SPREADSHEET_ID, SHEET_NAME, values, GCP_CONN_ID)
 
-    return {"rows": rows_needed, "cols": cols_needed, "cells_written": cells}
+    # 3. 如果 column or row數量不夠要擴增
+    ensure_sheet_size(
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=sheet_name,
+        rows_needed=rows_needed,
+        cols_needed=cols_needed,
+        gcp_conn_id=gcp_conn_id,
+    )
+
+    # 4. 清空 google sheet
+    clear_sheet(
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=sheet_name,
+        gcp_conn_id=gcp_conn_id,
+    )
+
+    # 5. 一次append 5*block，最多１０萬個 cells，約 2941筆資料到 google sheet
+    cells = upload_values_in_batches(
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=sheet_name,
+        values=values,
+        gcp_conn_id=gcp_conn_id,
+    )
+
+    return {
+        "sheet_name": sheet_name,
+        "rows": rows_needed,
+        "cols": cols_needed,
+        "cells_written": cells,
+    }
+
+def task_export_one_target(
+    spreadsheet_id: str,
+    sheet_name: str,
+    sql: str,
+    pg_conn_id: str,
+    gcp_conn_id: str,
+    **context,
+) -> dict:
+    return export_one_target_to_sheet(
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=sheet_name,
+        sql=sql,
+        pg_conn_id=pg_conn_id,
+        gcp_conn_id=gcp_conn_id,
+    )
+# 20260311_001 <<
 
 
 # ===================== DAG 定義 =====================
@@ -318,12 +423,22 @@ with DAG(
     tags=["postgres", "sheets", "optimized", "json-safe", "auto-resize", "maxcell-guard"],
 ) as dag:
     start = EmptyOperator(task_id="start")
-
-    export_upload = PythonOperator(
-        task_id="export_postgres_to_sheets_batch",
-        python_callable=task_export_and_upload,  # context 自動傳入，無需 provide_context
-    )
-
     done = EmptyOperator(task_id="done")
 
-    start >> export_upload >> done
+    export_tasks = []
+
+    for target in EXPORT_TARGETS:
+        task = PythonOperator(
+            task_id=target["task_id"],
+            python_callable=task_export_one_target,
+            op_kwargs={
+                "spreadsheet_id": target["spreadsheet_id"],
+                "sheet_name": target["sheet_name"],
+                "sql": target["sql"],
+                "pg_conn_id": PG_CONN_ID,
+                "gcp_conn_id": GCP_CONN_ID,
+            },
+        )
+        export_tasks.append(task)
+
+    start >> export_tasks >> done
