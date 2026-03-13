@@ -5,3 +5,18 @@ sources:
     schema: public
     tables:
       - name: ptt_macshop_articles_product_detail
+
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "(select (count(*) - count(created_date))::float / count(*) from public.ptt_macshop_articles_product_detail) < 0.05"
+
+          - dbt_utils.expression_is_true:
+              expression: "(select (count(*) - count(product_type))::float / count(*) from public.ptt_macshop_articles_product_detail) < 0.15"
+
+          - dbt_utils.expression_is_true:
+              expression: "(select (count(*) - count(price))::float / count(*) from public.ptt_macshop_articles_product_detail) < 0.5"
+
+        columns:
+          - name: created_date
+          - name: product_type
+          - name: price
