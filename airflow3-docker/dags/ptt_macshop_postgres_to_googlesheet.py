@@ -17,6 +17,7 @@ API 會回 400 並中止整批寫入。
 # 20260311_001 - PoChun Hsu - [Alter]   collect the parameter.
 # 20260311_002 - PoChun Hsu - [Alter]   Define a single workflow of inserting.
 # 20260311_003 - PoChun Hsu - [Alter]   Parallel insert to Google sheet.
+# 20260313_001 - PoChun Hsu - [Alter]   Data set change. Trigger by  DATA_MART_UPDATED
 
 from datetime import datetime, date, timedelta
 from decimal import Decimal
@@ -33,7 +34,7 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 
 # ===================== Dataset 定義 =====================
-FORMATTED_UPDATED = Dataset("dataset://ptt_macshop/formatted_updated")
+DATA_MART_UPDATED      = Dataset("dataset://ptt_macshop/data_mart_updated") # 20260313_001
 
 # ===================== Airflow Variables（可於 UI 調整） =====================
 # 20260311_001 >>
@@ -427,7 +428,7 @@ def task_export_one_target(
 # ===================== DAG 定義 =====================
 with DAG(
     dag_id="ptt_macshop_postgßres_to_googlesheet",
-    schedule=[FORMATTED_UPDATED],  # Dataset-based trigger
+    schedule=[DATA_MART_UPDATED],  # 20260313_001
     start_date=datetime(2024, 1, 1),
     catchup=False,
     default_args={"retries": 0, "retry_delay": timedelta(minutes=3)},
