@@ -428,7 +428,7 @@ def task_export_one_target(
 # ===================== DAG 定義 =====================
 with DAG(
     dag_id="ptt_macshop_postgßres_to_googlesheet",
-    schedule=[DATA_MART_UPDATED],  # Dataset-based trigger
+    schedule=[DATA_MART_UPDATED],  # 20260313_001
     start_date=datetime(2024, 1, 1),
     catchup=False,
     default_args={"retries": 0, "retry_delay": timedelta(minutes=3)},
