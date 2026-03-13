@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: Mart_Log_Daily_Product_Index
+    description: daily product transaction mart
+
+    columns:
+      - name: created_date
+        tests:
+          - not_null
+
+      - name: product_type
+        tests:
+          - not_null
+
+      - name: transaction_count
+        tests:
+          - not_null
+
+      - name: average_price
+        tests:
+          - not_null
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - created_date
+            - product_type
