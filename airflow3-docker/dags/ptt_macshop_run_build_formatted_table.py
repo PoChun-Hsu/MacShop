@@ -12,6 +12,7 @@
 # 20251010_001 - PoChun Hsu - [Add]     Dataset for trigger across DAGs.
 # 20251213_001 - PoChun Hsu - [Add]     Jobs for turn on/off Spark. Based on practical experience, starting the Spark service only when executing a Spark job results in a higher success rate.
 # 20260110_001 - PoChun Hsu - [Alter]   Stop Spark service no matter job fail or success  
+# 20260313_001 - PoChun Hsu - [Alter]   Data set name change. FORMATTED_UPDATED -> DATA_WAREHOUSE_UPDATED
 
 from __future__ import annotations
 import pendulum
@@ -30,7 +31,7 @@ from airflow.task.trigger_rule import TriggerRule
 from airflow.utils.trigger_rule import TriggerRule
 
 
-FORMATTED_UPDATED = Dataset("dataset://ptt_macshop/formatted_updated") # 20251010_001
+DATA_WAREHOUSE_UPDATED = Dataset("dataset://ptt_macshop/data_warehouse_updated") # 20251010_001 # 20260313_001
 
 # --------------------------
 # 基本設定
@@ -247,7 +248,7 @@ with DAG(
         {SPARK_SUBMIT_CMD}
         ```
         """,
-        outlets=[FORMATTED_UPDATED],
+        outlets=[DATA_WAREHOUSE_UPDATED], # 20260313_001
     )
 
     # 20251213_001 >>
@@ -297,4 +298,3 @@ with DAG(
         >> wait_spark_ready \
         >> build_formatted_table \
         >> stop_spark_services_at_the_end
-
