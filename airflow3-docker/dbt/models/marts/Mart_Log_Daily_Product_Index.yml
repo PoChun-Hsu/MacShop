@@ -1,3 +1,4 @@
+# 20260314_002 - PoChun Hsu - [Add]     Testing condition.
 version: 2
 
 models:
@@ -20,6 +21,11 @@ models:
       - name: average_price
         tests:
           - not_null
+          # 20260314_002 >>
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+          # 20260314_002 <<
 
     tests:
       - dbt_utils.unique_combination_of_columns:
