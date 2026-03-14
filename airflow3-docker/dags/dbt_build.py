@@ -1,4 +1,5 @@
-# 20260313_001- PoChun Hsu - [Add]     DAG for updating DBT
+# 20260313_001 - PoChun Hsu - [Add]     DAG for updating DBT
+# 20260314_001 - PoChun Hsu - [Alter]   Docker run -> Docker exec. exec will execute on the same container while run will create a new one.
 
 from __future__ import annotations
 
@@ -55,8 +56,8 @@ with DAG(
         bash_command=f"""
         set -euo pipefail
         cd {HOST_PROJECT_PATH}
-        docker compose -f {COMPOSE_FILE} run --rm --no-deps dbt dbt debug
-        """,
+        docker compose -f {COMPOSE_FILE} exec -T dbt dbt debug
+        """, # 20260314_001
         execution_timeout=timedelta(minutes=5),
     )
 
@@ -65,8 +66,8 @@ with DAG(
         bash_command=f"""
         set -euo pipefail
         cd {HOST_PROJECT_PATH}
-        docker compose -f {COMPOSE_FILE} run --rm --no-deps dbt dbt source freshness
-        """,
+        docker compose -f {COMPOSE_FILE} exec -T dbt dbt source freshness
+        """, # 20260314_001
         execution_timeout=timedelta(minutes=10),
     )
 
@@ -75,10 +76,11 @@ with DAG(
         bash_command=f"""
         set -euo pipefail
         cd {HOST_PROJECT_PATH}
-        docker compose -f {COMPOSE_FILE} run --rm --no-deps dbt \
-          dbt build --select Mart_Log_Daily_Product_Index+ Mart_Log_Monthly_Product_Index+
-        """,
+        docker compose -f {COMPOSE_FILE} exec -T dbt \
+        dbt build --select Mart_Log_Daily_Product_Index Mart_Log_Monthly_Product_Index
+        """, # 20260314_001
         execution_timeout=timedelta(minutes=30),
+        outlets=[DATA_MART_UPDATED],
     )
 
     dbt_docs_generate = BashOperator(
@@ -86,11 +88,10 @@ with DAG(
         bash_command=f"""
         set -euo pipefail
         cd {HOST_PROJECT_PATH}
-        docker compose -f {COMPOSE_FILE} run --rm dbt dbt docs generate
-        """,
+        docker compose -f {COMPOSE_FILE} exec -T dbt dbt docs generate
+        """, # 20260314_001
         execution_timeout=timedelta(minutes=15),
-        trigger_rule=TriggerRule.ALL_SUCCESS,
-        outlets=[DATA_MART_UPDATED]
+        trigger_rule=TriggerRule.ALL_SUCCESS
     )
 
     finish = EmptyOperator(
