@@ -1,3 +1,5 @@
+# 20260314_002 - PoChun Hsu - [Add]     Data Freshness check.
+
 version: 2
 
 sources:
@@ -20,3 +22,15 @@ sources:
           - name: created_date
           - name: product_type
           - name: price
+
+# 20260314_002 >>
+  - name: macshop_dw
+    schema: public
+    tables:
+      - name: ptt_macshop_articles_product_detail
+        loaded_at_field: created_date
+
+        freshness:
+          warn_after: {count: 60, period: minute}
+          error_after: {count: 3, period: hour}
+# 20260314_002 <<
