@@ -1,5 +1,6 @@
 # 20260313_001 - PoChun Hsu - [Add]     DAG for updating DBT
 # 20260314_001 - PoChun Hsu - [Alter]   Docker run -> Docker exec. exec will execute on the same container while run will create a new one.
+# 20260314_002 - PoChun Hsu - [Add]     Testing
 
 from __future__ import annotations
 
@@ -71,6 +72,19 @@ with DAG(
         execution_timeout=timedelta(minutes=10),
     )
 
+    # 20260314_002 >>
+    dbt_source_test = BashOperator(
+        task_id="dbt_source_test",
+        bash_command=f"""
+        set -euo pipefail
+        cd {HOST_PROJECT_PATH}
+        docker compose -f {COMPOSE_FILE} exec -T dbt \
+        dbt test --select source:*
+        """,
+        execution_timeout=timedelta(minutes=10),
+    )
+    # 20260314_002 <<
+
     dbt_build_product_index = BashOperator(
         task_id="dbt_build_product_index",
         bash_command=f"""
@@ -99,4 +113,13 @@ with DAG(
         trigger_rule=TriggerRule.ALL_SUCCESS,
     )
 
-    start >> check_dbt_container >> dbt_debug >> dbt_source_freshness >> dbt_build_product_index >> dbt_docs_generate >> finish
+(
+    start
+    >> check_dbt_container
+    >> dbt_debug
+    >> dbt_source_freshness
+    >> dbt_source_test
+    >> dbt_build_product_index
+    >> dbt_docs_generate
+    >> finish
+)
