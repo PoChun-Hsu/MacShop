@@ -1,0 +1,9 @@
+exposures:
+  - name: macshop_dashboard
+    type: dashboard
+    depends_on:
+      - ref('Mart_Log_Daily_Product_Index')
+      - ref('Mart_Log_Monthly_Product_Index')
+    owner:
+      name: PoChun Hsu
+      email: pochun@example.com
