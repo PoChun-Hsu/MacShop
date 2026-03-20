@@ -1,4 +1,5 @@
 # 20260314_002 - PoChun Hsu - [Add]     Data Freshness check.
+# 20260320_001 - PoChun Hsu - [Alter]   Use macros, null_ratio 
 
 version: 2
 
@@ -7,17 +8,17 @@ sources:
     schema: public
     tables:
       - name: ptt_macshop_articles_product_detail
-
+        # 20260320_001 >>
         tests:
           - dbt_utils.expression_is_true:
-              expression: "(select (count(*) - count(created_date))::float / count(*) from public.ptt_macshop_articles_product_detail) < 0.05"
+              expression: "{{ null_ratio(source('raw','ptt_macshop_articles_product_detail'), 'created_date') }} < 0.05"
 
           - dbt_utils.expression_is_true:
-              expression: "(select (count(*) - count(product_type))::float / count(*) from public.ptt_macshop_articles_product_detail) < 0.15"
+              expression: "{{ null_ratio(source('raw','ptt_macshop_articles_product_detail'), 'product_type') }} < 0.15"
 
           - dbt_utils.expression_is_true:
-              expression: "(select (count(*) - count(price))::float / count(*) from public.ptt_macshop_articles_product_detail) < 0.5"
-
+              expression: "{{ null_ratio(source('raw','ptt_macshop_articles_product_detail'), 'price') }} < 0.5"
+        # 20260320_001 <<
         columns:
           - name: created_date
           - name: product_type
