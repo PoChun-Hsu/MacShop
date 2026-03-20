@@ -1,3 +1,5 @@
+# 20260326_001 - PoChun Hsu - [Create]  view for renaming columns.
+
 {{ config(materialized='view') }}
 
 select
