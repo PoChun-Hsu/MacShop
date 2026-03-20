@@ -1,24 +1,29 @@
 # 20260314_002 - PoChun Hsu - [Add]     Testing condition.
+# 20260320_001 - PoChun Hsu - [Add]     Description for table and colums.
 version: 2
 
 models:
   - name: Mart_Log_Daily_Product_Index
-    description: daily product transaction mart
+    description: "每日商品交易統計（依日期與商品類型）" # 20260320_001
 
     columns:
       - name: created_date
+        description: "PTT 文章發文日期" # 20260320_001
         tests:
           - not_null
 
       - name: product_type
+        description: "產品類型，例如 iphone, ipad 等" # 20260320_001
         tests:
           - not_null
 
       - name: transaction_count
+        description: "每天文章篇數，視為交易量" # 20260320_001
         tests:
           - not_null
 
       - name: average_price
+        description: "每天商品的平均定價" # 20260320_001
         tests:
           - not_null
           # 20260314_002 >>
