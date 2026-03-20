@@ -1,18 +1,16 @@
 # 20260310_001 - PoChun Hsu - [Create]  Table
+# 20260320_001 - PoChun Hsu - [Alter]   Move rename to sstaging. Move filter to intermediate.
 
 {{ config(materialized='table') }}
 
 select
-    date(created_date) as created_date,
+    created_date,
     product_type,
     count(*) as transaction_count,
     round(avg(price), 0) as average_price
-from {{ source('raw', 'ptt_macshop_articles_product_detail') }}
-where created_date is not null
-  and product_type is not null
-  and price <= 100000
+from {{ ref('int_product_clean') }}
 group by
-    date(created_date),
+    created_date,
     product_type
 order by
     created_date
