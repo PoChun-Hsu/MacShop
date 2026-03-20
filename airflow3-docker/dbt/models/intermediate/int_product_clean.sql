@@ -1,3 +1,5 @@
+# 20260326_001 - PoChun Hsu - [Create]  view for filter.
+  
 {{ config(materialized='view') }}
 
 select *
