@@ -6,6 +6,8 @@
 # [Merged] Integrate Spark, RedisInsight, builder, and GCP key support from Airflow 2.11.0 into 3.1.0 structure.
 # -----------------------------------------------------------------------------
 # 20260309_001 - PoChun Hsu - [Add]  DBT
+# 20260310_001 - PoChun Hsu - [Add]  port for DBT
+# 20260330_001 - PoChun Hsu - [Add]  Iceberg and MinIO (Simulate S3)
 
 ---
 x-airflow-common:
@@ -49,8 +51,9 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/scripts:/opt/airflow/scripts:ro
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/keys:/opt/airflow/keys:ro
     - /var/run/docker.sock:/var/run/docker.sock   # ★ 新增：允許 DockerOperator/Spark trigger
-    - ${AIRFLOW_PROJ_DIR:-.}:/opt/project:ro
-    - ./:/opt/project:rw
+    #- ${AIRFLOW_PROJ_DIR:-.}:/opt/project:ro
+    #- ./:/opt/project:rw
+    - /Users/sherryli/Desktop/MacShop/airflow3-docker:/Users/sherryli/Desktop/MacShop/airflow3-docker:rw
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -175,7 +178,7 @@ services:
   # -------------------------------------
   # Spark Stack (from 2.11.0)
   # -------------------------------------
-  spark:
+  spark-master:
     image: local/spark:3.5.0
     container_name: spark
     command: ["/bin/bash","-lc","/opt/spark/sbin/start-master.sh"]
@@ -199,23 +202,39 @@ services:
       - ./output_parquet:/opt/spark-output
       - ./spark-events:/tmp/spark-events
       - ./spark_conf:/opt/spark/conf
-      - ./spark/spark_jars:/opt/spark/external-jars:ro
+      # - ./spark/jars:/opt/spark/external-jars:ro # 20260330_001
     deploy:
       resources:
         limits:
           memory: 3G
+    depends_on:
+      - iceberg-rest
+      - minio
+
+  spark-thrift:
+    image: local/spark:3.5.0
+    command: >
+      bash -c "
+      /opt/spark/sbin/start-thriftserver.sh
+      --master spark://spark:7077
+      --hiveconf hive.server2.thrift.port=10000
+      "
+    ports:
+      - "10000:10000"
+    depends_on:
+      - spark-master
 
   spark-worker:
     image: local/spark:3.5.0
-    command: ["/bin/bash","-lc","/opt/spark/sbin/start-worker.sh spark://spark:7077"]
+    command: >
+      bash -c "
+      /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+      "
     environment:
       - SPARK_MODE=worker
       - SPARK_HOME=/opt/spark
       - SPARK_WORKER_MEMORY=4G
       - SPARK_NO_DAEMONIZE=true
-      - SPARK_WORKER_OPTS=-Dspark.worker.cleanup.enabled=true \
-        -Dspark.worker.cleanup.interval=300 \
-        -Dlog4j.configurationFile=/opt/spark/conf/log4j2.properties
       - SPARK_LOCAL_DIRS=/tmp/spark-temp
       - SPARK_WORKER_DIR=/opt/spark/work-dir
       - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
@@ -224,9 +243,9 @@ services:
     volumes:
       - ./output_parquet:/opt/spark-output
       - ./spark_conf:/opt/spark/conf
-      - ./spark_jars:/opt/spark/external-jars:ro
+      # - ./spark/jars:/opt/spark/external-jars:ro 20260330_001
     depends_on:
-      - spark
+      - spark-master
 
   spark-history:
     image: local/spark:3.5.0
@@ -241,20 +260,58 @@ services:
 
   # 20260309_001 >>
   dbt:
-    image: ghcr.io/dbt-labs/dbt-postgres:1.7.0
+    image: ghcr.io/dbt-labs/dbt-postgres:1.9.latest
     platform: linux/amd64
     container_name: dbt
     working_dir: /usr/app
     volumes:
       - ./dbt:/usr/app
+    ports:
+      - "8081:8080" # 20260310_001
+    environment:
+      PIP_ADDITIONAL_REQUIREMENTS: "dbt-metricflow"
     depends_on:
       postgres:
         condition: service_healthy
     tty: true
     stdin_open: true
     entrypoint: ["/bin/sh", "-c"]
-    command: ["sleep infinity"]
+    command: ["dbt docs generate && dbt docs serve --port 8080 --host 0.0.0.0"]
   # 20260309_001 <<
+  
+  # 20260330_001 >>
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: admin123
+    volumes:
+      - ./minio_data:/data
+
+  iceberg-rest:
+    image: tabulario/iceberg-rest
+    ports:
+      - "8181:8181"
+    environment:
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: admin123
+      AWS_REGION: us-east-1
+
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_ACCESS__KEY__ID: admin
+      CATALOG_S3_SECRET__ACCESS__KEY: admin123
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      CATALOG_S3_REGION: us-east-1
+    depends_on:
+      - minio
+  # 20260330_001 <<
 
   # -------------------------------------
   # Builders (for reproducible builds)
