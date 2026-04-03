@@ -12,9 +12,6 @@
 ---
 x-airflow-common:
   &airflow-common
-  build:
-    context: .                        # 保留原設定
-    dockerfile: ./airflow/Dockerfile  
   image: local/airflow:3.1.0-pc1
   environment:
     &airflow-common-env
@@ -62,6 +59,9 @@ x-airflow-common:
     postgres:
       condition: service_healthy
 
+x-spark-common: &spark-common
+  image: local/spark:3.5.0
+
 services:
   # -------------------------------------
   # Core Services
@@ -104,6 +104,10 @@ services:
   # -------------------------------------
   airflow-apiserver:
     <<: *airflow-common
+    build:
+      context: .
+      dockerfile: ./airflow/Dockerfile
+    image: local/airflow:3.1.0-pc1
     command: api-server
     ports: ["8080:8080"]
     healthcheck:
@@ -179,6 +183,9 @@ services:
   # Spark Stack (from 2.11.0)
   # -------------------------------------
   spark-master:
+    build:
+      context: .
+      dockerfile: ./spark/Dockerfile
     image: local/spark:3.5.0
     container_name: spark
     command: ["/bin/bash","-lc","/opt/spark/sbin/start-master.sh"]
@@ -186,69 +193,66 @@ services:
       - SPARK_MODE=master
       - SPARK_HOME=/opt/spark
       - SPARK_NO_DAEMONIZE=true
-      - SPARK_WORKER_OPTS=-Dspark.worker.cleanup.enabled=true -Dspark.worker.cleanup.interval=300
-      - SPARK_LOCAL_DIRS=/tmp/spark-temp
-      - SPARK_WORKER_DIR=/opt/spark/work-dir
-      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
-      - SPARK_DRIVER_MEMORY=2G
-      - SPARK_EXECUTOR_MEMORY=2G
-      - SPARK_SUBMIT_OPTS=-Dlog4j.configurationFile=/opt/spark/conf/log4j2.properties
     ports:
       - "8088:8080"
       - "7077:7077"
       - "4040:4040"
     volumes:
       - ./spark_app:/opt/spark-apps
-      - ./output_parquet:/opt/spark-output
-      - ./spark-events:/tmp/spark-events
       - ./spark_conf:/opt/spark/conf
-      # - ./spark/jars:/opt/spark/external-jars:ro # 20260330_001
-    deploy:
-      resources:
-        limits:
-          memory: 3G
+      - ./spark-events:/tmp/spark-events
     depends_on:
       - iceberg-rest
       - minio
 
+
   spark-thrift:
-    image: local/spark:3.5.0
+    <<: *spark-common
     command: >
       bash -c "
       /opt/spark/sbin/start-thriftserver.sh
       --master spark://spark:7077
-      --hiveconf hive.server2.thrift.port=10000
       "
     ports:
       - "10000:10000"
+    volumes:
+      - ./spark_conf:/opt/spark/conf
+      - ./spark-events:/tmp/spark-events
+    depends_on:
+      - spark-master
+
+  spark-init:
+    <<: *spark-common
+    volumes:
+      - ./spark_app:/opt/spark-apps
+      - ./spark_conf:/opt/spark/conf
+    command: >
+      bash -c "
+      sleep 10 &&
+      /opt/spark/bin/spark-sql \
+        --master spark://spark:7077 \
+        -f /opt/spark-apps/init.sql
+      "
     depends_on:
       - spark-master
 
   spark-worker:
-    image: local/spark:3.5.0
+    <<: *spark-common
     command: >
       bash -c "
-      /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+      /opt/spark/sbin/start-worker.sh spark://spark:7077
       "
     environment:
       - SPARK_MODE=worker
       - SPARK_HOME=/opt/spark
-      - SPARK_WORKER_MEMORY=4G
-      - SPARK_NO_DAEMONIZE=true
-      - SPARK_LOCAL_DIRS=/tmp/spark-temp
-      - SPARK_WORKER_DIR=/opt/spark/work-dir
-      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
-      - SPARK_DRIVER_MEMORY=2G
-      - SPARK_EXECUTOR_MEMORY=2G
     volumes:
-      - ./output_parquet:/opt/spark-output
       - ./spark_conf:/opt/spark/conf
-      # - ./spark/jars:/opt/spark/external-jars:ro 20260330_001
+      - ./spark-events:/tmp/spark-events
     depends_on:
       - spark-master
 
   spark-history:
-    image: local/spark:3.5.0
+    <<: *spark-common
     command: ["/bin/bash","-lc","/opt/spark/sbin/start-history-server.sh"]
     environment:
       - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:/tmp/spark-events
@@ -324,13 +328,6 @@ services:
     profiles: ["builder"]
     volumes:
       - ./keys:/opt/airflow/keys:ro
-
-  spark-builder:
-    image: local/spark:3.5.0
-    build:
-      context: ./spark
-      dockerfile: Dockerfile
-    profiles: ["builder"]
 
   # -------------------------------------
   # Initialization
