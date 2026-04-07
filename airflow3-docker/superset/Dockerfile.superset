@@ -1,0 +1,22 @@
+# 20260407_001 - PoChun Hsu - [Add]     Packages for Trino and Superset.
+
+FROM python:3.9-slim
+
+USER root
+
+# 基本系統套件（superset 需要）
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安裝 superset + trino driver
+RUN pip install --no-cache-dir \
+    apache-superset \
+    trino
+
+# 建立 user（跟官方一致）
+RUN useradd --create-home --shell /bin/bash superset
+USER superset
+
+WORKDIR /app
