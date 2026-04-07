@@ -1,4 +1,4 @@
-# 20260407_001 - PoChun Hsu - [Add]     Create admin, database and dataset.
+# 20260407_001 - PoChun Hsu - [Add]     Create admin, database and dataset for superset
 
 #!/bin/bash
 set -e
