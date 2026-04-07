@@ -5,9 +5,14 @@
 # 20251024_001 - PoChun Hsu
 # [Merged] Integrate Spark, RedisInsight, builder, and GCP key support from Airflow 2.11.0 into 3.1.0 structure.
 # -----------------------------------------------------------------------------
-# 20260309_001 - PoChun Hsu - [Add]  DBT
-# 20260310_001 - PoChun Hsu - [Add]  port for DBT
-# 20260330_001 - PoChun Hsu - [Add]  Iceberg and MinIO (Simulate S3)
+# 20260309_001 - PoChun Hsu - [Add]   DBT
+# 20260310_001 - PoChun Hsu - [Add]   port for DBT
+# 20260330_001 - PoChun Hsu - [Add]   Iceberg and MinIO (Simulate S3)
+# 20260407_001 - PoChun Hsu - [Add]   Trino and Superset
+# 20260407_002 - PoChun Hsu - [Drop]  Spark-Thrift
+# 20260407_003 - PoChun Hsu - [Add]   MinIO initial
+# 20260407_004 - PoChun Hsu - [Alter] Spark setting
+
 
 ---
 x-airflow-common:
@@ -188,7 +193,7 @@ services:
       dockerfile: ./spark/Dockerfile
     image: local/spark:3.5.0
     container_name: spark
-    command: ["/bin/bash","-lc","/opt/spark/sbin/start-master.sh --host spark --port 7077"]
+    command: ["/bin/bash","-lc","/opt/spark/sbin/start-master.sh --host spark --port 7077"] # 20260407_001
     environment:
       - SPARK_MODE=master
       - SPARK_HOME=/opt/spark
