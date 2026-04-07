@@ -1,3 +1,5 @@
+# 20260407_001 - PoChun Hsu - [Add]     Initial for iceberg database and table
+
 CREATE SCHEMA IF NOT EXISTS iceberg.default;
 
 CREATE TABLE IF NOT EXISTS iceberg.default.test (
