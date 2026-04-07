@@ -188,7 +188,7 @@ services:
       dockerfile: ./spark/Dockerfile
     image: local/spark:3.5.0
     container_name: spark
-    command: ["/bin/bash","-lc","/opt/spark/sbin/start-master.sh"]
+    command: ["/bin/bash","-lc","/opt/spark/sbin/start-master.sh --host spark --port 7077"]
     environment:
       - SPARK_MODE=master
       - SPARK_HOME=/opt/spark
@@ -205,51 +205,50 @@ services:
       - iceberg-rest
       - minio
 
-
-  spark-thrift:
-    <<: *spark-common
-    command: >
-      bash -c "
-      /opt/spark/sbin/start-thriftserver.sh
-      --master spark://spark:7077
-      "
-    ports:
-      - "10000:10000"
-    volumes:
-      - ./spark_conf:/opt/spark/conf
-      - ./spark-events:/tmp/spark-events
-    depends_on:
-      - spark-master
-
   spark-init:
     <<: *spark-common
     volumes:
       - ./spark_app:/opt/spark-apps
       - ./spark_conf:/opt/spark/conf
+      - ./spark-events:/tmp/spark-events
+    environment:
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=admin123
     command: >
-      bash -c "
-      sleep 10 &&
-      /opt/spark/bin/spark-sql \
-        --master spark://spark:7077 \
-        -f /opt/spark-apps/init.sql
-      "
+      bash -lc "/opt/spark/bin/spark-sql \
+      --master spark://spark:7077 \
+      --conf spark.executor.memory=1g \
+      --conf spark.executor.cores=1 \
+      --conf spark.sql.catalog.iceberg=org.apache.iceberg.spark.SparkCatalog \
+      --conf spark.sql.catalog.iceberg.type=rest \
+      --conf spark.sql.catalog.iceberg.uri=http://iceberg-rest:8181 \
+      --conf spark.sql.catalog.iceberg.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+      --conf spark.sql.catalog.iceberg.s3.endpoint=http://minio:9000 \
+      --conf spark.sql.catalog.iceberg.s3.path-style-access=true \
+      --conf spark.sql.catalog.iceberg.s3.access-key-id=admin \
+      --conf spark.sql.catalog.iceberg.s3.secret-access-key=admin123 \
+      --conf spark.sql.catalog.iceberg.client.region=us-east-1 \
+      -f /opt/spark-apps/init.sql"
     depends_on:
-      - spark-master
+      spark-master:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
 
   spark-worker:
     <<: *spark-common
     command: >
-      bash -c "
-      /opt/spark/sbin/start-worker.sh spark://spark:7077
-      "
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_HOME=/opt/spark
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark:7077
+      --cores 2
+      --memory 2g
     volumes:
       - ./spark_conf:/opt/spark/conf
       - ./spark-events:/tmp/spark-events
     depends_on:
-      - spark-master
+      spark-master:
+        condition: service_started
 
   spark-history:
     <<: *spark-common
@@ -296,6 +295,18 @@ services:
     volumes:
       - ./minio_data:/data
 
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5 &&
+      mc alias set local http://minio:9000 admin admin123 &&
+      mc mb -p local/warehouse || true
+      "
+
   iceberg-rest:
     image: tabulario/iceberg-rest
     ports:
@@ -316,6 +327,48 @@ services:
     depends_on:
       - minio
   # 20260330_001 <<
+
+  # 20260404_001 >>
+  trino:
+    image: trinodb/trino
+    ports:
+      - "8085:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+      - ./trino/etc/config.properties:/etc/trino/config.properties
+    environment:
+      - JVM_OPTS=-Xmx2G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      interval: 10s
+      retries: 10
+    depends_on:
+      - iceberg-rest
+      - minio
+
+
+  superset:
+    build:
+      context: ./superset
+      dockerfile: Dockerfile.superset
+    ports:
+      - "8086:8088"
+    environment:
+      SUPERSET_SECRET_KEY: mysecret
+      FLASK_APP: superset
+      PYTHONPATH: /app
+    volumes:
+      - superset_home:/app/superset_home
+      - ./superset:/app    
+    command: ["/bin/bash", "/app/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/login"]
+      interval: 10s
+      retries: 10
+    depends_on:
+      trino:
+        condition: service_healthy
+  # 20260404_001 <<
 
   # -------------------------------------
   # Builders (for reproducible builds)
@@ -363,3 +416,4 @@ services:
 volumes:
   postgres-db-volume:
   metabase-data:
+  superset_home:
