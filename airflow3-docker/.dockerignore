@@ -1,0 +1,13 @@
+.git
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.venv
+**/node_modules
+output_parquet
+spark-events
+*.parquet
+*.whl
+*.jar
+*.zip
+*.log
