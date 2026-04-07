@@ -10,8 +10,7 @@
 # 20260330_001 - PoChun Hsu - [Add]   Iceberg and MinIO (Simulate S3)
 # 20260407_001 - PoChun Hsu - [Add]   Trino and Superset
 # 20260407_002 - PoChun Hsu - [Drop]  Spark-Thrift
-# 20260407_003 - PoChun Hsu - [Add]   MinIO initial
-# 20260407_004 - PoChun Hsu - [Alter] Spark setting
+# 20260407_003 - PoChun Hsu - [Alter] Spark setting
 
 
 ---
@@ -209,12 +208,16 @@ services:
     depends_on:
       - iceberg-rest
       - minio
+      
+# 20260407_002 >>
+# 20260407_002 <<
 
   spark-init:
     <<: *spark-common
     volumes:
       - ./spark_app:/opt/spark-apps
       - ./spark_conf:/opt/spark/conf
+    # # 20260407_003 >>
       - ./spark-events:/tmp/spark-events
     environment:
       - AWS_REGION=us-east-1
@@ -240,9 +243,11 @@ services:
         condition: service_started
       minio-init:
         condition: service_completed_successfully
-
+    # 20260407_003 <<
+  
   spark-worker:
     <<: *spark-common
+    # 20260407_003 >>
     command: >
       /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
       spark://spark:7077
@@ -254,6 +259,7 @@ services:
     depends_on:
       spark-master:
         condition: service_started
+    # 20260407_003 <<
 
   spark-history:
     <<: *spark-common
@@ -333,7 +339,7 @@ services:
       - minio
   # 20260330_001 <<
 
-  # 20260404_001 >>
+  # 20260407_001 >>
   trino:
     image: trinodb/trino
     ports:
@@ -373,7 +379,7 @@ services:
     depends_on:
       trino:
         condition: service_healthy
-  # 20260404_001 <<
+  # 20260407_001 <<
 
   # -------------------------------------
   # Builders (for reproducible builds)
