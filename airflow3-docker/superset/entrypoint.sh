@@ -16,8 +16,11 @@ superset fab create-admin \
 
 superset init
 
-echo "🔧 Create database connection"
-superset shell < /app/init_db.py
+echo "🔍 Running init_db.py"
+superset shell <<EOF
+exec(open('/app/init_db.py').read())
+EOF
+echo "✅ init_db.py done"
 
 echo "🚀 Start Superset"
 superset run -h 0.0.0.0 -p 8088
