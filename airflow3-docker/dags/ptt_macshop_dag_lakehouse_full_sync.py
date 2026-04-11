@@ -454,6 +454,7 @@ run_token = args.run_token
 
 spark = (
     SparkSession.builder
+    .master("spark://spark:7077")
     .appName("load-ptt-macshop-to-iceberg")
     .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog")
     .config("spark.sql.catalog.iceberg.type", "rest")
@@ -466,6 +467,9 @@ spark = (
     .config("spark.sql.catalog.iceberg.client.region", "us-east-1")
     .getOrCreate()
 )
+
+spark.conf.set("spark.sql.shuffle.partitions", 2)
+spark.conf.set("spark.sql.files.maxPartitionBytes", 67108864)  # 64MB
 
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {{ICEBERG_CATALOG}}.{{ICEBERG_NAMESPACE}}")
 
@@ -526,7 +530,7 @@ print("DEBUG article_path=", article_path)
 page_path = f"{{SPARK_STAGE_ROOT}}/{{run_token}}/page_dates/*.jsonl"
 
 article_df = (
-    spark.read.schema(article_schema).json(article_path)
+    spark.read.json(article_path)
     .select(
         trim(col("Title")).alias("title"),
         trim(col("Author")).alias("author"),
@@ -539,6 +543,8 @@ article_df = (
     .filter(col("link").isNotNull())
     .dropDuplicates(["link"])
 )
+
+article_df = article_df.repartition(1)
 
 page_df = (
     spark.read.schema(page_schema).json(page_path)
