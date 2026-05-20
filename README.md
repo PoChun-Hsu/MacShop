@@ -1,6 +1,7 @@
 # MacShop
 
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/f838f1af-ebc0-4d91-8684-18b4199564a7" />
+<img width="1448" height="1086" alt="PTT Information Structure" src="https://github.com/user-attachments/assets/b7a47a8c-b7b2-4604-a7c5-2843d4365ebe" />
+
 1. 從 PTT Macshop 版進行爬蟲，使用 Redis 避免存取重複資料，將有更新的文章寫入 PostgreSQL，形成 raw data。<br>
 2. 將 raw data 運用 Pyspark 擷取出細節資訊，如產品品項，價格，顏色，容量等，存回 PostgreSQL 形成 Data Warehouse.<br>
 3. 運用 DBT 從 Data Warehouse 整理出每日交易量，平均成交價格等資訊，存回 PostgreSQL 形成 Data Mart.<br>
